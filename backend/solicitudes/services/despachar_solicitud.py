@@ -90,15 +90,11 @@ def despachar_solicitud(
             nota            = f"Despacho: {observacion}" if observacion else "",
         )
 
-        # Verificar repetitividad tras cada despacho
-        try:
-            from .verificar_repetitividad import verificar_repetitividad
-            verificar_repetitividad(solicitud)
-        except Exception as e:
-            # No romper el despacho si falla la verificación
-            import logging
-            logging.getLogger(__name__).error(
-                f"Error en verificación de repetitividad: {e}"
-            )
+        # verificar_repetitividad ya no se llama acá — ver DEPRECATED en
+        # services/verificar_repetitividad.py. El cupo mensual (la regla
+        # que exige la normativa) ahora se hace cumplir de forma bloqueante
+        # aguas arriba, en creación y aprobación (validar_cupo.py) — antes
+        # ninguna de las 4 reglas de verificar_repetitividad bloqueaba nada,
+        # solo generaban una alerta después del hecho.
 
         return solicitud

@@ -6,9 +6,11 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
 } from "react";
 import type { ReactNode } from "react";
 import axios from "axios";
+import type { CupoMensual } from "../types/solicitud.types";
 
 // ------------------------------------------------
 // TIPOS
@@ -57,7 +59,17 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  // Cupo mensual del consumidor autenticado, cacheado acá para no
+  // repetir el fetch en cada pantalla que lo necesita (widget,
+  // formulario de nueva solicitud). refreshCupo({force:true}) es el
+  // punto único de invalidación: post-crear, post-cancelar, y al
+  // recibir un 400 de "excede cupo" (por si ANH aprobó algo mientras
+  // tanto). Sin force, respeta un TTL de 5 minutos.
+  cupo: CupoMensual | null;
+  refreshCupo: (opts?: { force?: boolean }) => Promise<CupoMensual | null>;
 }
+
+const CUPO_TTL_MS = 5 * 60 * 1000;
 
 // ------------------------------------------------
 // GESTION DE TOKEN — memoria + localStorage
@@ -163,6 +175,8 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user,    setUser]    = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cupo,    setCupo]    = useState<CupoMensual | null>(null);
+  const cupoFetchedAtRef = useRef(0);
 
   const refreshUser = useCallback(async () => {
     try {
@@ -173,6 +187,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(null);
     }
   }, []);
+
+  const refreshCupo = useCallback(async (opts?: { force?: boolean }) => {
+    if (!user || user.tipo_usuario !== "CONS") {
+      setCupo(null);
+      return null;
+    }
+    const fresco = Date.now() - cupoFetchedAtRef.current < CUPO_TTL_MS;
+    if (!opts?.force && fresco && cupoFetchedAtRef.current > 0) {
+      return cupo;
+    }
+    try {
+      const res = await api.get<CupoMensual>("/api/solicitudes/mi-disponible/");
+      setCupo(res.data);
+      cupoFetchedAtRef.current = Date.now();
+      return res.data;
+    } catch {
+      return null;
+    }
+  }, [user, cupo]);
 
   useEffect(() => {
     if (esRutaPublica()) {
@@ -200,6 +233,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const meRes = await api.get("/api/users/me/");
     setUser(meRes.data);
+
+    // Cachear cupo al login (best-effort — si falla, MiSolicitud lo
+    // vuelve a pedir al montar). No se usa refreshCupo() acá porque
+    // leería `user` del closure todavía en null (setUser es async).
+    if (meRes.data.tipo_usuario === "CONS") {
+      try {
+        const cupoRes = await api.get<CupoMensual>("/api/solicitudes/mi-disponible/");
+        setCupo(cupoRes.data);
+        cupoFetchedAtRef.current = Date.now();
+      } catch { /* MiSolicitud reintenta al montar */ }
+    }
   };
 
   const logout = async () => {
@@ -213,6 +257,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     finally {
       setUser(null);
       setToken(null);
+      setCupo(null);
+      cupoFetchedAtRef.current = 0;
     }
   };
 
@@ -225,6 +271,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         refreshUser,
+        cupo,
+        refreshCupo,
       }}
     >
       {children}

@@ -77,6 +77,8 @@ urlpatterns = [
     #   POST   api/solicitudes/{id_publico}/observar/
     #   POST   api/solicitudes/{id_publico}/rechazar/
     #   POST   api/solicitudes/{id_publico}/despachar/
+    #   GET    api/solicitudes/mi-disponible/
+    #   GET    api/solicitudes/cupo-consumidor/{consumidor_id}/
     # ------------------------------------------------
 
     path("api/", include("solicitudes.urls")),

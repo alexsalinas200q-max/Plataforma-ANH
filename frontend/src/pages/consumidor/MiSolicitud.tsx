@@ -6,6 +6,8 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import Layout from "../../components/Layout";
 import { EstadoSolicitudBadge } from "../../components/ui/EstadoBadge";
+import { CupoMensualWidget } from "../../components/ui/CupoMensualWidget";
+import { useAuth } from "../../context/AuthContext";
 import { solicitudesService } from "../../services/solicitudes.service";
 import { estacionesService } from "../../services/estaciones.service";
 import { catalogosService } from "../../services/catalogos.service";
@@ -75,6 +77,10 @@ const minutosRestantes = (fechaLimite: string | null): number => {
 // ------------------------------------------------
 
 export default function MiSolicitud() {
+  const { cupo, refreshCupo } = useAuth();
+  // Con el cupo agotado el submit queda deshabilitado; si el cupo no
+  // se pudo cargar (null) no se bloquea — el backend valida igual.
+  const sinCupo = cupo !== null && cupo.disponible <= 0;
   const [solicitudActiva,  setSolicitudActiva]  = useState<Solicitud | null>(null);
   const [historial,        setHistorial]        = useState<Solicitud[]>([]);
   const [loading,          setLoading]          = useState(true);
@@ -147,6 +153,11 @@ export default function MiSolicitud() {
 
   useEffect(() => { cargar(); }, []);
 
+  // "Al montar el dashboard" — MiSolicitud es la pantalla de inicio
+  // del consumidor (RoleRedirect lo manda acá). Sin force: respeta
+  // el cache de 5 min si vino fresco desde el login.
+  useEffect(() => { refreshCupo(); }, [refreshCupo]);
+
   useEffect(() => {
     catalogosService.getDepartamentos()
       .then(setDeptos)
@@ -208,6 +219,18 @@ export default function MiSolicitud() {
       setCreando(false);
       return;
     }
+    // Validación pre-submit contra el cupo cacheado — el backend es la
+    // fuente de verdad (puede haber cambiado entre que se cargó el
+    // widget y el submit), pero evita un viaje al servidor para el
+    // caso obvio de que ya se ve en pantalla que no alcanza.
+    if (cupo && data.litros_solicitados > cupo.disponible) {
+      setError(
+        `Excederías tu cupo mensual. Ya tienes ${cupo.usado}L aprobados/despachados ` +
+        `de tus ${cupo.total_mes}L. Máximo disponible: ${cupo.disponible}L.`
+      );
+      setCreando(false);
+      return;
+    }
     try {
       await solicitudesService.crear({
         tipo_combustible:              data.tipo_combustible as import("../../types/solicitud.types").TipoCombustible,
@@ -225,6 +248,7 @@ export default function MiSolicitud() {
       reset();
       setProvs([]); setMunis([]); setEstaciones([]);
       await cargar();
+      await refreshCupo({ force: true });
     } catch (err: unknown) {
       const e = err as { response?: { data?: Record<string, string[]> | { detail?: string } } };
       const data2 = e.response?.data;
@@ -239,6 +263,11 @@ export default function MiSolicitud() {
       } else {
         setError("Error al crear la solicitud.");
       }
+      // El 400 puede ser justo por exceder cupo (o porque ANH aprobó
+      // algo mientras el consumidor tenía el formulario abierto) —
+      // se resincroniza para que el widget no quede mostrando un
+      // disponible que ya no es real.
+      await refreshCupo({ force: true });
     } finally {
       setCreando(false);
     }
@@ -284,6 +313,7 @@ export default function MiSolicitud() {
       await solicitudesService.cancelar(solicitudActiva.id_publico);
       setExito("Solicitud cancelada.");
       await cargar();
+      await refreshCupo({ force: true });
     } catch {
       setError("Error al cancelar la solicitud.");
     }
@@ -349,6 +379,15 @@ export default function MiSolicitud() {
             </button>
           )}
         </div>
+
+        {/* CUPO MENSUAL — entre el header y el resto (solicitud activa o formulario) */}
+        {cupo && (
+          <CupoMensualWidget
+            usado={cupo.usado}
+            total={cupo.total_mes}
+            disponible={cupo.disponible}
+          />
+        )}
 
         {/* ALERTAS */}
         {error && (
@@ -601,9 +640,9 @@ export default function MiSolicitud() {
                   <label className="block text-sm font-medium text-foreground mb-1.5">
                     Litros solicitados *
                   </label>
-                  <input type="number" min={1} max={120}
+                  <input type="number" min={1} max={cupo?.disponible ?? 120}
                     {...register("litros_solicitados", { valueAsNumber: true })}
-                    placeholder="Máx. 120 L"
+                    placeholder={`Máx. ${cupo?.disponible ?? 120} L disponibles`}
                     className={inputCls(!!errors.litros_solicitados)}
                   />
                   {errors.litros_solicitados && <p className="text-red-500 text-xs mt-1">{errors.litros_solicitados.message}</p>}
@@ -741,6 +780,16 @@ export default function MiSolicitud() {
                 )}
               </div>
 
+              {sinCupo && (
+                <div className="flex items-start gap-3 bg-state-danger-bg text-state-danger-fg rounded-xl px-4 py-3 text-sm">
+                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span>
+                    Alcanzaste tu cupo mensual de {cupo?.total_mes} L. No puedes
+                    crear nuevas solicitudes hasta el próximo mes.
+                  </span>
+                </div>
+              )}
+
               <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={() => {
                     setMostrarForm(false); reset();
@@ -749,7 +798,7 @@ export default function MiSolicitud() {
                   className="px-4 py-2.5 border border-border text-muted-foreground rounded-xl text-sm hover:bg-background transition-colors">
                   Cancelar
                 </button>
-                <button type="submit" disabled={creando}
+                <button type="submit" disabled={creando || sinCupo}
                   className="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover disabled:bg-slate-300 disabled:cursor-not-allowed text-primary-foreground rounded-xl text-sm font-medium transition-colors">
                   {creando
                     ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />

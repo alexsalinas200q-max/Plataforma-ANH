@@ -50,6 +50,16 @@ def aprobar_solicitud(
             )
 
         # -----------------------------------------
+        # Validar cupo mensual (120 L/mes, normativa)
+        # -----------------------------------------
+
+        from .validar_cupo import verificar_puede_aprobar
+
+        puede, mensaje = verificar_puede_aprobar(solicitud, litros_aprobados)
+        if not puede:
+            raise ValidationError(mensaje)
+
+        # -----------------------------------------
         # Validar estado actual
         # -----------------------------------------
 

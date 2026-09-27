@@ -2,10 +2,11 @@
 
 from rest_framework import mixins, viewsets, status
 from rest_framework.decorators import action
+from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.filters import OrderingFilter, SearchFilter
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied, NotFound, ValidationError
 
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -195,9 +196,14 @@ class SolicitudViewSet(
         except DjangoValidationError as e:
             self._manejar_error_negocio(e)
         except IntegrityError:
+            # Red de seguridad contra condiciones de carrera: el chequeo de
+            # verificar_puede_crear_solicitud ya cubre este caso en el
+            # camino normal, pero la constraint de BD (unique_solicitud_
+            # activa_por_consumidor) sigue siendo la garantía dura si dos
+            # requests llegan casi simultáneas.
             raise ValidationError(
-                "Ya tienes una solicitud activa (pendiente, observada o aprobada). "
-                "Debes esperar a que sea procesada antes de crear una nueva."
+                "Ya tienes una solicitud activa. No puedes crear otra "
+                "hasta que se cierre."
             )
 
         return Response(
@@ -415,3 +421,78 @@ class SolicitudViewSet(
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{nombre}"'
         return response
+
+
+# ------------------------------------------------
+# CUPO MENSUAL — CONSUMIDOR AUTENTICADO
+# ------------------------------------------------
+
+class MiDisponibleView(APIView):
+    """
+    GET /api/solicitudes/mi-disponible/
+
+    Cupo mensual y solicitud activa del consumidor autenticado.
+    Usado por el widget de cupo y el formulario de nueva solicitud
+    en el frontend para no dejar que el consumidor intente algo que
+    el backend va a rechazar de todas formas.
+    """
+
+    permission_classes = [EsConsumidor]
+
+    def get(self, request):
+        from .services.validar_cupo import calcular_cupo_mensual, obtener_solicitud_activa
+
+        consumidor = request.user.consumidor
+        cupo       = calcular_cupo_mensual(consumidor)
+        activa     = obtener_solicitud_activa(consumidor)
+
+        return Response({
+            "total_mes":   cupo["total"],
+            "usado":       cupo["usado"],
+            "disponible":  cupo["disponible"],
+            "mes":         cupo["mes"],
+            "tiene_activa": activa is not None,
+            "solicitud_activa": (
+                {
+                    "id_publico":         activa.id_publico,
+                    "estado":             activa.estado,
+                    "litros_solicitados": activa.litros_solicitados,
+                }
+                if activa is not None else None
+            ),
+        })
+
+
+# ------------------------------------------------
+# CUPO MENSUAL — CONSULTA POR ANH/ADMIN
+# ------------------------------------------------
+
+class CupoConsumidorView(APIView):
+    """
+    GET /api/solicitudes/cupo-consumidor/<consumidor_id>/
+
+    Cupo mensual de un consumidor puntual, para que ANH lo vea antes
+    de aprobar (el modal de aprobación lo consulta al abrirse). Sin
+    tiene_activa/solicitud_activa: ANH ya está viendo la solicitud
+    puntual que va a aprobar, no necesita ese dato acá.
+    """
+
+    permission_classes = [EsUsuarioANH]
+
+    def get(self, request, consumidor_id):
+        from consumidores.models import ConsumidorPerfil
+        from .services.validar_cupo import calcular_cupo_mensual
+
+        try:
+            consumidor = ConsumidorPerfil.objects.get(id=consumidor_id)
+        except ConsumidorPerfil.DoesNotExist:
+            raise NotFound("Consumidor no encontrado.")
+
+        cupo = calcular_cupo_mensual(consumidor)
+
+        return Response({
+            "total_mes":  cupo["total"],
+            "usado":      cupo["usado"],
+            "disponible": cupo["disponible"],
+            "mes":        cupo["mes"],
+        })

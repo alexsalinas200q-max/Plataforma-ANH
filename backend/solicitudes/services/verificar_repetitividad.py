@@ -1,4 +1,12 @@
 # apps/solicitudes/services/verificar_repetitividad.py
+#
+# DEPRECATED: reemplazado parcialmente por validar_cupo.py (regla mensual bloqueante).
+# Las 3 reglas restantes (semanal, cantidad/30 días, rotación de estaciones)
+# quedan documentadas como trabajo futuro para módulo de alertas al ANH.
+#
+# Ya no se llama desde ningún punto del código (antes se llamaba desde
+# despachar_solicitud.py). Se deja el archivo sin borrar para no perder
+# la lógica de las 3 reglas pendientes de refactor.
 
 import logging
 from datetime import timedelta

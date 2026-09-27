@@ -223,6 +223,15 @@ class SolicitudCreateSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
+        from .services.validar_cupo import verificar_puede_crear_solicitud
+
+        consumidor = self.context["request"].user.consumidor
+        litros     = attrs.get("litros_solicitados")
+
+        puede, mensaje = verificar_puede_crear_solicitud(consumidor, litros)
+        if not puede:
+            raise serializers.ValidationError(mensaje)
+
         dep  = attrs.get("departamento")
         prov = attrs.get("provincia")
         mun  = attrs.get("municipio")

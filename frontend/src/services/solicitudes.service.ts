@@ -1,7 +1,7 @@
 // src/services/solicitudes.service.ts
 
 import { api } from "../context/AuthContext";
-import type { Solicitud, SolicitudCreate } from "../types/solicitud.types";
+import type { Solicitud, SolicitudCreate, CupoMensual, CupoConsumidor } from "../types/solicitud.types";
 
 interface PaginatedResponse {
   results: Solicitud[];
@@ -83,6 +83,11 @@ export const solicitudesService = {
     return res.data;
   },
 
+  obtenerMiDisponible: async (): Promise<CupoMensual> => {
+    const res = await api.get("/api/solicitudes/mi-disponible/");
+    return res.data;
+  },
+
   // Retorna Blob para visualización inline
   getComprobanteBlob: async (idPublico: string): Promise<Blob> => {
     const res = await api.get(`/api/solicitudes/${idPublico}/comprobante/`, {
@@ -136,6 +141,11 @@ export const solicitudesService = {
 
   getById: async (idPublico: string): Promise<Solicitud> => {
     const res = await api.get(`/api/solicitudes/${idPublico}/`);
+    return res.data;
+  },
+
+  obtenerCupoConsumidor: async (consumidorId: number): Promise<CupoConsumidor> => {
+    const res = await api.get(`/api/solicitudes/cupo-consumidor/${consumidorId}/`);
     return res.data;
   },
 

@@ -77,6 +77,29 @@ export interface AuditoriaEstado {
   nota:            string;
 }
 
+// Cupo mensual del consumidor autenticado — GET /api/solicitudes/mi-disponible/
+export interface CupoMensual {
+  total_mes:   number;
+  usado:       number;
+  disponible:  number;
+  mes:         string;
+  tiene_activa: boolean;
+  solicitud_activa: {
+    id_publico:         string;
+    estado:              string;
+    litros_solicitados:  number;
+  } | null;
+}
+
+// Cupo mensual de un consumidor puntual, para ANH —
+// GET /api/solicitudes/cupo-consumidor/<id>/
+export interface CupoConsumidor {
+  total_mes:  number;
+  usado:      number;
+  disponible: number;
+  mes:        string;
+}
+
 export interface SolicitudCreate {
   tipo_combustible:              TipoCombustible;
   litros_solicitados:            number;

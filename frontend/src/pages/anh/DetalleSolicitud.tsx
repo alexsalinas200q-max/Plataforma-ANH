@@ -10,7 +10,7 @@ import { EstadoSolicitudBadge } from "../../components/ui/EstadoBadge";
 import { solicitudesService } from "../../services/solicitudes.service";
 import { estacionesService } from "../../services/estaciones.service";
 import { catalogosService } from "../../services/catalogos.service";
-import type { Solicitud } from "../../types/solicitud.types";
+import type { Solicitud, CupoConsumidor } from "../../types/solicitud.types";
 import { COMBUSTIBLES } from "../../utils/constants";
 import { formatFecha, formatIdPublico } from "../../utils/format";
 import {
@@ -81,6 +81,7 @@ export default function DetalleSolicitudANH() {
   const [munis,      setMunis]      = useState<Opcion[]>([]);
   const [estaciones, setEstaciones] = useState<Opcion[]>([]);
   const [cargandoCatalogo, setCargandoCatalogo] = useState(false);
+  const [cupoConsumidor, setCupoConsumidor] = useState<CupoConsumidor | null>(null);
 
   const formAprobar = useForm<AprobarData>({
     resolver: zodResolver(aprobarSchema),
@@ -118,6 +119,11 @@ export default function DetalleSolicitudANH() {
 
   useEffect(() => {
     if (accion !== "aprobar" || !solicitud) return;
+
+    setCupoConsumidor(null);
+    solicitudesService.obtenerCupoConsumidor(solicitud.consumidor.id)
+      .then(setCupoConsumidor)
+      .catch(() => {}); // el form igual funciona sin el dato, solo no muestra el cupo
 
     formAprobar.reset({
       tipo_combustible_aprobado: solicitud.tipo_combustible,
@@ -219,6 +225,13 @@ export default function DetalleSolicitudANH() {
         setError(msgs);
       } else {
         setError("Error al aprobar la solicitud.");
+      }
+      // Resincronizar: el 400 puede ser justo por cupo excedido, y el
+      // número mostrado en pantalla ya no sería el real.
+      if (solicitud) {
+        solicitudesService.obtenerCupoConsumidor(solicitud.consumidor.id)
+          .then(setCupoConsumidor)
+          .catch(() => {});
       }
     } finally { setProcesando(false); }
   };
@@ -420,6 +433,14 @@ export default function DetalleSolicitudANH() {
                     <span>Estación preferida: <strong>{(solicitud as any).estacion_nombre ?? "Sin preferencia"}</strong></span>
                   </div>
 
+                  {/* Cupo mensual del consumidor */}
+                  {cupoConsumidor && (
+                    <div className="bg-background border border-border rounded-xl px-4 py-3 text-xs text-foreground">
+                      Cupo del consumidor: <strong>{cupoConsumidor.usado}/{cupoConsumidor.total_mes} L</strong> este mes.
+                      Máximo aprobable: <strong>{cupoConsumidor.disponible}L</strong>.
+                    </div>
+                  )}
+
                   {/* Advertencias */}
                   {combustibleModificado && (
                     <div className="flex items-start gap-2 bg-amber-50 border border-amber-300 text-amber-700 rounded-xl px-4 py-3 text-xs">
@@ -445,7 +466,9 @@ export default function DetalleSolicitudANH() {
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-muted-foreground mb-1">Litros aprobados *</label>
-                      <input type="number" min={1} max={solicitud.litros_solicitados} {...formAprobar.register("litros_aprobados", { valueAsNumber: true })} className={inputCls} />
+                      <input type="number" min={1}
+                        max={cupoConsumidor ? Math.min(solicitud.litros_solicitados, cupoConsumidor.disponible) : solicitud.litros_solicitados}
+                        {...formAprobar.register("litros_aprobados", { valueAsNumber: true })} className={inputCls} />
                       {formAprobar.formState.errors.litros_aprobados && <p className="text-red-500 text-xs mt-1">{formAprobar.formState.errors.litros_aprobados.message}</p>}
                     </div>
                   </div>
