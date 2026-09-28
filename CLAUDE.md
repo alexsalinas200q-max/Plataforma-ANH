@@ -183,18 +183,15 @@ Next:
   selects/listas vacías sin ningún mensaje al usuario. Reemplazar
   por el patrón `flash()` de error en cada pantalla afectada
   (identificar todas al auditar, no solo una).
-- **Flujo de reset de contraseña muestra la contraseña en texto
-  plano.** Hoy el admin ve la contraseña temporal del usuario en
-  pantalla (`MostrarPasswordModal.tsx`). Evaluar alternativas
-  (envío directo por email, link de set-password de un solo uso,
-  etc.) antes de que esto llegue a producción.
-- **Servicio de correo (Brevo) sin configurar.** Bloquea
-  verificación de email y recuperación de contraseña en
-  producción — `users/email_service.py` usa el backend de consola
-  en dev; falta la configuración real de Brevo (API key, remitente
-  verificado) para producción.
 
 ### Media prioridad
+- **Cupo mensual: error silencioso en `/mi-disponible/`.** Si falla
+  el fetch del cupo (`refreshCupo` en `context/AuthContext.tsx`),
+  el error se descarta: `CupoMensualWidget` no se muestra y el
+  formulario de `MiSolicitud.tsx` cae al máximo de 120 L, sin
+  mensaje al usuario. No rompe nada (el backend valida el cupo
+  igual), pero es un caso más del manejo de errores silencioso de
+  arriba — resolver con el mismo patrón `flash()`.
 - **Presentación de datos en reportes PDF/Excel** necesita mejoras
   (formato, layout) — sin detalle todavía de qué específicamente,
   revisar con el usuario.
@@ -205,6 +202,13 @@ Next:
 
 ### Baja prioridad
 - **Ajustes de responsive en móvil** — pendientes, menores.
+
+### Resueltos
+- **Reset de contraseña mostraba la contraseña en texto plano** —
+  resuelto en H1 (`3aa3bd0`): alta y reset por ADMIN/ANH envían un
+  link por email; `MostrarPasswordModal.tsx` eliminado.
+- **Brevo sin configurar** — operativo en producción
+  (`FRONTEND_URL=https://plataforma-anh.vercel.app` verificada).
 
 Known issues tracked here going forward — ask before assuming
 something is a bug vs. intentional if it's not on this list.
