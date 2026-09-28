@@ -7,7 +7,7 @@ import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
 import { Spinner } from "../../components/ui/Spinner";
 import { Modal } from "../../components/ui/Modal";
-import { MostrarPasswordModal } from "../../components/ui/MostrarPasswordModal";
+import { EnlaceEnviadoModal } from "../../components/ui/EnlaceEnviadoModal";
 import { catalogosService } from "../../services/catalogos.service";
 import { estacionesService } from "../../services/estaciones.service";
 import {
@@ -25,7 +25,7 @@ import { EstadoCuentaBadge } from "../../components/ui/EstadoBadge";
 import { useAuth } from "../../context/AuthContext";
 import {
   Users, Plus, Search, RefreshCw,
-  CheckCircle, UserCheck, UserX, KeyRound, AlertTriangle,
+  CheckCircle, UserCheck, UserX, KeyRound, AlertTriangle, Send,
 } from "lucide-react";
 
 // ------------------------------------------------
@@ -101,8 +101,19 @@ export default function GestionUsuarios() {
   const [estaciones, setEstaciones] = useState<{ id: number; nombre: string }[]>([]);
   const [loadCatalogo, setLoadCatalogo] = useState(false);
 
-  // Modal de contraseña provisional (al crear o al resetear)
-  const [modalPassword, setModalPassword] = useState<{ titulo: string; email: string; password: string } | null>(null);
+  // Modal "enlace enviado" (al crear o al resetear). userId permite
+  // reintentar desde el mismo modal si el email no salió.
+  const [modalEnlace, setModalEnlace] = useState<{
+    titulo:       string;
+    email:        string;
+    emailEnviado: boolean;
+    tipo:         "activacion" | "recuperacion";
+    userId:       number;
+  } | null>(null);
+  const [reenviandoModal, setReenviandoModal] = useState(false);
+
+  // Reenvío de activación desde la fila
+  const [reenviandoId, setReenviandoId] = useState<number | null>(null);
 
   // Cambio de estado
   const [cambiandoEstado, setCambiandoEstado] = useState<number | null>(null);
@@ -300,10 +311,12 @@ export default function GestionUsuarios() {
 
         const res = await usersService.crear(payload);
         setModalForm(false);
-        setModalPassword({
-          titulo:   "Usuario creado",
-          email:    res.email,
-          password: res.password_temporal,
+        setModalEnlace({
+          titulo:       "Usuario creado",
+          email:        res.email,
+          emailEnviado: res.email_enviado,
+          tipo:         "activacion",
+          userId:       res.user_id,
         });
       }
       await cargar();
@@ -350,14 +363,16 @@ export default function GestionUsuarios() {
     setErrorReset("");
     try {
       const res = await usersService.resetearPassword(confirmarReset.id);
-      setConfirmarReset(null);
-      // No hace falta recargar el listado: el reset solo toca password
-      // y requiere_cambio_password, ninguno de los dos se muestra en la tabla.
-      setModalPassword({
-        titulo:   "Contraseña reseteada",
-        email:    res.email,
-        password: res.password_temporal,
+      // No hace falta recargar el listado: el reset solo invalida la
+      // contraseña y cierra sesiones, nada de eso se muestra en la tabla.
+      setModalEnlace({
+        titulo:       "Contraseña reseteada",
+        email:        res.email,
+        emailEnviado: res.email_enviado,
+        tipo:         "recuperacion",
+        userId:       confirmarReset.id,
       });
+      setConfirmarReset(null);
     } catch (err: unknown) {
       const e = err as { response?: { data?: unknown } };
       const d = e.response?.data;
@@ -372,6 +387,40 @@ export default function GestionUsuarios() {
     } finally {
       setReseteando(false);
     }
+  };
+
+  // ------------------------------------------------
+  // REENVIAR ENLACE
+  // ------------------------------------------------
+
+  const reenviarActivacion = async (u: UserFuncionario) => {
+    setReenviandoId(u.id);
+    try {
+      const res = await usersService.reenviarActivacion(u.id);
+      if (res.email_enviado) {
+        flash("success", `Se envió un nuevo enlace de activación a ${res.email}.`);
+      } else {
+        flash("error", "No se pudo enviar el email de activación. Intenta nuevamente.");
+      }
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } } };
+      flash("error", e.response?.data?.detail ?? "Error al reenviar el enlace de activación.");
+    } finally { setReenviandoId(null); }
+  };
+
+  // Reintento desde el modal cuando el email del alta o del reset no salió.
+  // En el reset se repite el reset (genera un link nuevo e invalida el anterior).
+  const reintentarEnvio = async () => {
+    if (!modalEnlace) return;
+    setReenviandoModal(true);
+    try {
+      const res = modalEnlace.tipo === "activacion"
+        ? await usersService.reenviarActivacion(modalEnlace.userId)
+        : await usersService.resetearPassword(modalEnlace.userId);
+      setModalEnlace({ ...modalEnlace, emailEnviado: res.email_enviado });
+    } catch {
+      setModalEnlace({ ...modalEnlace, emailEnviado: false });
+    } finally { setReenviandoModal(false); }
   };
 
   const inputCls = "w-full px-4 py-2.5 rounded-xl border border-border text-sm bg-input focus:border-primary focus:ring-2 focus:ring-primary/20 focus:bg-card outline-none";
@@ -502,7 +551,15 @@ export default function GestionUsuarios() {
                             {u.tipo_usuario !== "CONSUMIDOR" && (
                               <Button variant="ghost" size="sm" onClick={() => abrirEditar(u)}>Editar</Button>
                             )}
-                            {u.estado_cuenta === "ACTIVO" ? (
+                            {/* Una cuenta PENDIENTE solo se activa con el link:
+                                ni activar/suspender a mano ni resetear (el backend
+                                rechaza el cambio de estado con 400). */}
+                            {u.estado_cuenta === "PENDIENTE" ? (
+                              <Button variant="ghost" size="sm" icon={<Send className="w-3.5 h-3.5" />}
+                                loading={reenviandoId === u.id} onClick={() => reenviarActivacion(u)}>
+                                Reenviar enlace
+                              </Button>
+                            ) : u.estado_cuenta === "ACTIVO" ? (
                               <Button variant="ghost" size="sm" icon={<UserX className="w-3.5 h-3.5" />}
                                 loading={cambiandoEstado === u.id} onClick={() => cambiarEstado(u, "SUSPENDIDO")}>
                                 <span className="sr-only">Suspender</span>
@@ -513,7 +570,7 @@ export default function GestionUsuarios() {
                                 <span className="sr-only">Activar</span>
                               </Button>
                             )}
-                            {u.tipo_usuario !== "CONSUMIDOR" && u.id !== adminActual?.id && (
+                            {u.tipo_usuario !== "CONSUMIDOR" && u.id !== adminActual?.id && u.estado_cuenta !== "PENDIENTE" && (
                               <Button variant="ghost" size="sm" icon={<KeyRound className="w-3.5 h-3.5" />}
                                 onClick={() => { setErrorReset(""); setConfirmarReset(u); }}>
                                 <span className="sr-only">Resetear contraseña</span>
@@ -538,7 +595,7 @@ export default function GestionUsuarios() {
           {errorForm && <Alert type="error" message={errorForm} />}
 
           {!editando && (
-            <Alert type="info" message="Se generará una contraseña provisional que se mostrará una sola vez tras crear el usuario." />
+            <Alert type="info" message="El usuario recibirá un enlace por email para crear su contraseña y activar la cuenta." />
           )}
 
           <div className="grid grid-cols-2 gap-3">
@@ -680,14 +737,16 @@ export default function GestionUsuarios() {
         </div>
       </Modal>
 
-      {/* MODAL CONTRASEÑA PROVISIONAL (al crear o al resetear) */}
-      <MostrarPasswordModal
-        key={modalPassword?.password ?? "sin-password"}
-        open={!!modalPassword}
-        onClose={() => setModalPassword(null)}
-        titulo={modalPassword?.titulo ?? ""}
-        email={modalPassword?.email ?? ""}
-        password={modalPassword?.password ?? ""}
+      {/* MODAL ENLACE ENVIADO (al crear o al resetear) */}
+      <EnlaceEnviadoModal
+        open={!!modalEnlace}
+        onClose={() => setModalEnlace(null)}
+        titulo={modalEnlace?.titulo ?? ""}
+        email={modalEnlace?.email ?? ""}
+        emailEnviado={modalEnlace?.emailEnviado ?? true}
+        tipo={modalEnlace?.tipo ?? "activacion"}
+        onReenviar={reintentarEnvio}
+        reenviando={reenviandoModal}
       />
 
       {/* MODAL CONFIRMACIÓN — RESETEAR CONTRASEÑA */}
@@ -704,12 +763,12 @@ export default function GestionUsuarios() {
             <div className="flex items-start gap-2 text-xs text-muted-foreground bg-background rounded-xl p-3 border border-border">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-state-warning-fg" />
               <span>
-                Se generará una contraseña provisional que el usuario deberá cambiar
-                al volver a ingresar.
+                La contraseña actual dejará de funcionar y el usuario recibirá un
+                enlace por email para crear una nueva.
                 <br /><br />
                 Se cerrarán las sesiones del usuario. Una sesión ya abierta puede
                 seguir activa hasta 30 minutos. Si necesitas cortar el acceso de
-                inmediato, suspendé la cuenta.
+                inmediato, suspende la cuenta.
               </span>
             </div>
 

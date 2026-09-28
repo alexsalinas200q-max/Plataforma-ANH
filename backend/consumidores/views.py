@@ -11,10 +11,13 @@ from rest_framework.views import APIView
 
 from django.db import transaction
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
 from users.permissions import IsAdminOrANH, IsConsumidor
-from users.serializers_admin import _generar_password_temporal
+from users.services import (
+    MENSAJE_RESET_CUENTA_PENDIENTE,
+    es_activacion_pendiente,
+    resetear_password_por_link,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -299,9 +302,10 @@ class ConsumidorPerfilViewSet(
     @action(detail=True, methods=["post"], url_path="resetear-password")
     def resetear_password(self, request, pk=None):
         """
-        Resetea la contraseña de un consumidor cuando la olvidó y el
-        flujo público de recuperación por email no es una opción
-        (Brevo aún no está configurado en producción). Equivalente a
+        Resetea la contraseña de un consumidor por link: la actual queda
+        inutilizable, se cierran sus sesiones y recibe un email para
+        definir una nueva (services.resetear_password_por_link). Nadie
+        ve la contraseña. Equivalente a
         FuncionarioResetearPasswordView, pero sobre ConsumidorPerfil:
         acá {pk} es el id del perfil, no del User, así que se opera
         sobre perfil.user.
@@ -325,18 +329,15 @@ class ConsumidorPerfilViewSet(
         perfil  = self.get_object()
         usuario = perfil.user
 
-        password_temporal = _generar_password_temporal()
-        usuario.set_password(password_temporal)
-        usuario.requiere_cambio_password = True
-        usuario.save(update_fields=["password", "requiere_cambio_password"])
+        # Todavía no creó su contraseña: corresponde reenviar el link
+        # de activación (users/usuarios/<id>/reenviar-activacion/).
+        if es_activacion_pendiente(usuario):
+            return Response(
+                {"detail": MENSAJE_RESET_CUENTA_PENDIENTE},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Cierra las sesiones activas del usuario blacklisteando todos sus
-        # refresh tokens outstanding. LIMITACIÓN CONOCIDA Y ACEPTADA (misma
-        # que en FuncionarioResetearPasswordView): no revoca el access
-        # token que el usuario ya tenga en memoria, que sigue siendo
-        # válido hasta su propia expiración (máx. 30 min).
-        for token in OutstandingToken.objects.filter(user=usuario):
-            BlacklistedToken.objects.get_or_create(token=token)
+        email_enviado = resetear_password_por_link(usuario)
 
         logger.warning(
             "Reset de contraseña: %s %s (id=%s) reseteó a consumidor %s (id=%s)",
@@ -346,13 +347,9 @@ class ConsumidorPerfilViewSet(
 
         return Response(
             {
-                "detail":            "Contraseña reseteada correctamente.",
-                "email":             usuario.email,
-                "password_temporal": password_temporal,
-                "aviso": (
-                    "Comparte esta contraseña con el consumidor. Deberá "
-                    "cambiarla al iniciar sesión."
-                ),
+                "detail":        "Contraseña reseteada. Se envió un enlace al consumidor.",
+                "email":         usuario.email,
+                "email_enviado": email_enviado,
             },
             status=status.HTTP_200_OK
         )

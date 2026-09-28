@@ -83,6 +83,8 @@ function AppRoutes() {
         <Route path="/verificar-email" element={<VerificarPin />} />
         <Route path="/recuperar-password" element={<RecuperarPassword />} />
         <Route path="/recuperar-password/confirmar" element={<ConfirmarRecuperacion />} />
+        <Route path="/activar-cuenta" element={<ConfirmarRecuperacion modo="activacion" />} />
+        <Route path="/reenviar-activacion" element={<RecuperarPassword modo="activacion" />} />
         <Route path="/unauthorized"    element={<Unauthorized />} />
 
         {/* ---- REDIRECCIÓN POR ROL ---- */}

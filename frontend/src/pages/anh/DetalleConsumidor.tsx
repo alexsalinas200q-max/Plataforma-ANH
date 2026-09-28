@@ -8,15 +8,16 @@ import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
 import { Spinner } from "../../components/ui/Spinner";
 import { EstadoIdentidadBadge, AlertaBadge } from "../../components/ui/EstadoBadge";
-import { MostrarPasswordModal } from "../../components/ui/MostrarPasswordModal";
+import { EnlaceEnviadoModal } from "../../components/ui/EnlaceEnviadoModal";
 import { Modal } from "../../components/ui/Modal";
 import { consumidoresService } from "../../services/consumidores.service";
+import { usersService } from "../../services/users.service";
 import type { ConsumidorPerfil } from "../../types/consumidor.types";
 import { ACTIVIDADES } from "../../utils/constants";
 import { formatFecha } from "../../utils/format";
 import {
   ArrowLeft, User, MapPin, Shield,
-  FileImage, AlertCircle, CheckCircle, ShieldAlert, ShieldOff, KeyRound,
+  FileImage, AlertCircle, CheckCircle, ShieldAlert, ShieldOff, KeyRound, Send,
 } from "lucide-react";
 
 const ALERT_TIMEOUT = 4000;
@@ -61,7 +62,11 @@ export default function DetalleConsumidor() {
   const [confirmarReset, setConfirmarReset] = useState(false);
   const [reseteando,     setReseteando]     = useState(false);
   const [errorReset,     setErrorReset]     = useState("");
-  const [modalPassword,  setModalPassword]  = useState<{ email: string; password: string } | null>(null);
+  const [modalEnlace,    setModalEnlace]    = useState<{ email: string; emailEnviado: boolean } | null>(null);
+  const [reintentando,   setReintentando]   = useState(false);
+
+  // Reenvío de activación (cuenta PENDIENTE)
+  const [reenviando, setReenviando] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -114,13 +119,42 @@ export default function DetalleConsumidor() {
       setConfirmarReset(false);
       // No hace falta recargar el perfil: el reset no toca ningún
       // campo que se muestre en esta pantalla.
-      setModalPassword({ email: res.email, password: res.password_temporal });
+      setModalEnlace({ email: res.email, emailEnviado: res.email_enviado });
     } catch (err: unknown) {
       const e = err as { response?: { data?: { detail?: string } } };
       setErrorReset(e.response?.data?.detail ?? "Error al resetear la contraseña.");
     } finally {
       setReseteando(false);
     }
+  };
+
+  // Reintento desde el modal si el email del reset no salió: repite el
+  // reset (link nuevo, el anterior queda invalidado).
+  const reintentarReset = async () => {
+    if (!perfil || !modalEnlace) return;
+    setReintentando(true);
+    try {
+      const res = await consumidoresService.resetearPassword(perfil.id);
+      setModalEnlace({ email: res.email, emailEnviado: res.email_enviado });
+    } catch {
+      setModalEnlace({ ...modalEnlace, emailEnviado: false });
+    } finally { setReintentando(false); }
+  };
+
+  const reenviarActivacion = async () => {
+    if (!perfil) return;
+    setReenviando(true);
+    try {
+      const res = await usersService.reenviarActivacion(perfil.user.id);
+      if (res.email_enviado) {
+        flash("success", `Se envió un nuevo enlace de activación a ${res.email}.`);
+      } else {
+        flash("error", "No se pudo enviar el email de activación. Intenta nuevamente.");
+      }
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } } };
+      flash("error", e.response?.data?.detail ?? "Error al reenviar el enlace de activación.");
+    } finally { setReenviando(false); }
   };
 
   const textareaCls = "w-full px-4 py-2.5 rounded-xl border border-border text-sm bg-input focus:border-primary focus:ring-2 focus:ring-primary/20 focus:bg-card outline-none resize-none";
@@ -379,21 +413,42 @@ export default function DetalleConsumidor() {
             </h2>
           </CardHeader>
           <CardBody>
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <p className="text-sm font-medium text-foreground">Contraseña</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Resetea la contraseña si el consumidor no puede ingresar y olvidó su clave.
-                </p>
+            {/* Cuenta PENDIENTE: todavía no creó su contraseña, así que
+                la acción que corresponde es reenviar el link, no resetear. */}
+            {perfil.user.estado_cuenta === "PENDIENTE" ? (
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Activación pendiente</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    El consumidor todavía no activó su cuenta con el enlace que recibió por email.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  icon={<Send className="w-4 h-4" />}
+                  loading={reenviando}
+                  onClick={reenviarActivacion}
+                >
+                  Reenviar enlace de activación
+                </Button>
               </div>
-              <Button
-                variant="outline"
-                icon={<KeyRound className="w-4 h-4" />}
-                onClick={() => { setErrorReset(""); setConfirmarReset(true); }}
-              >
-                Resetear contraseña
-              </Button>
-            </div>
+            ) : (
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Contraseña</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Resetea la contraseña si el consumidor no puede ingresar y olvidó su clave.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  icon={<KeyRound className="w-4 h-4" />}
+                  onClick={() => { setErrorReset(""); setConfirmarReset(true); }}
+                >
+                  Resetear contraseña
+                </Button>
+              </div>
+            )}
           </CardBody>
         </Card>
 
@@ -445,8 +500,8 @@ export default function DetalleConsumidor() {
           <div className="flex items-start gap-2 text-xs text-muted-foreground bg-background rounded-xl p-3 border border-border">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-state-warning-fg" />
             <span>
-              Se generará una contraseña provisional que el consumidor deberá cambiar
-              al volver a ingresar.
+              La contraseña actual dejará de funcionar y el consumidor recibirá un
+              enlace por email para crear una nueva.
               <br /><br />
               Se cerrarán las sesiones del usuario. Una sesión ya abierta puede
               seguir activa hasta 30 minutos.
@@ -459,8 +514,8 @@ export default function DetalleConsumidor() {
               <span>
                 Este consumidor está bloqueado por repetitividad. Resetear la
                 contraseña no levanta ese bloqueo — sus solicitudes seguirán
-                rechazándose hasta que se resuelva la alerta. Solo le restaura
-                el acceso para iniciar sesión.
+                rechazándose hasta que se resuelva la alerta. Solo le permite
+                volver a iniciar sesión.
               </span>
             </div>
           )}
@@ -477,14 +532,16 @@ export default function DetalleConsumidor() {
         </div>
       </Modal>
 
-      {/* MODAL CONTRASEÑA PROVISIONAL */}
-      <MostrarPasswordModal
-        key={modalPassword?.password ?? "sin-password"}
-        open={!!modalPassword}
-        onClose={() => setModalPassword(null)}
+      {/* MODAL ENLACE ENVIADO (reset) */}
+      <EnlaceEnviadoModal
+        open={!!modalEnlace}
+        onClose={() => setModalEnlace(null)}
         titulo="Contraseña reseteada"
-        email={modalPassword?.email ?? ""}
-        password={modalPassword?.password ?? ""}
+        email={modalEnlace?.email ?? ""}
+        emailEnviado={modalEnlace?.emailEnviado ?? true}
+        tipo="recuperacion"
+        onReenviar={reintentarReset}
+        reenviando={reintentando}
       />
     </Layout>
   );

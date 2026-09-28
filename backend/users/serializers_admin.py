@@ -5,13 +5,11 @@
 #
 # Se separa del RegistroConsumidorSerializer (auto-registro público) porque
 # las reglas de negocio son distintas:
-#   - El admin no elige contraseña — la genera el backend
-#   - El email se marca como verificado (el admin verificó el documento físico)
-#   - La cuenta queda ACTIVA — no se envía PIN de verificación
-#   - Se fuerza el cambio de contraseña en el primer login
-#   - Devuelve la contraseña temporal para que el admin la comparta
-
-import secrets
+#   - Nadie elige contraseña al crear la cuenta: queda inutilizable y el
+#     consumidor define la suya desde el link de activación que le llega
+#     por email (la view lo envía, ver services.enviar_activacion)
+#   - No se envía PIN de verificación: completar el link verifica el email
+#   - La cuenta queda PENDIENTE hasta que el consumidor usa el link
 
 from django.db import transaction
 from rest_framework import serializers
@@ -19,23 +17,12 @@ from rest_framework import serializers
 from .models import User
 
 
-ALFABETO_PASSWORD = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
-
-
-def _generar_password_temporal(longitud: int = 12) -> str:
-    """
-    Contraseña temporal criptográficamente segura, sin caracteres
-    ambiguos (0/O, 1/l/I) para reducir errores al transcribirla.
-    """
-    return "".join(secrets.choice(ALFABETO_PASSWORD) for _ in range(longitud))
-
-
 class RegistroConsumidorPorAdminSerializer(serializers.Serializer):
     """
     Registro de consumidor iniciado por ANH/ADMIN.
 
-    Mismos campos que RegistroConsumidorSerializer EXCEPTO password/password2,
-    que genera el backend.
+    Mismos campos que RegistroConsumidorSerializer EXCEPTO password/password2:
+    la contraseña la define el consumidor desde el link de activación.
     """
 
     # --- Datos de User ---
@@ -151,14 +138,12 @@ class RegistroConsumidorPorAdminSerializer(serializers.Serializer):
     # ------------------------------------------------
     # CREACIÓN
     # Misma orquestación que RegistroConsumidorSerializer.create(),
-    # pero con contraseña autogenerada y cuenta ya activa/verificada.
+    # pero sin contraseña: la cuenta queda pendiente de activación.
     # ------------------------------------------------
 
     @transaction.atomic
     def create(self, validated_data):
         from consumidores.models import ConsumidorPerfil, DocumentoIdentidad
-
-        password_temporal = _generar_password_temporal()
 
         campos_user   = ["email", "nombres", "apellido_paterno", "apellido_materno"]
         campos_perfil = [
@@ -175,14 +160,14 @@ class RegistroConsumidorPorAdminSerializer(serializers.Serializer):
         doc_data    = {k: validated_data.pop(k) for k in campos_doc    if k in validated_data}
 
         user = User(tipo_usuario=User.TipoUsuario.CONS, **user_data)
-        user.set_password(password_temporal)
 
-        # Diferencia clave con el registro público: el admin ya verificó
-        # la identidad presencialmente, así que la cuenta nace activa
-        # y sin necesidad de PIN de verificación de email.
-        user.email_verificado         = True
-        user.estado_cuenta            = User.EstadoCuenta.ACTIVO
-        user.requiere_cambio_password = True
+        # Contraseña inutilizable + PENDIENTE: es la combinación que
+        # identifica una activación pendiente (es_activacion_pendiente).
+        # El admin nunca conoce la contraseña del consumidor.
+        user.set_unusable_password()
+        user.email_verificado         = False
+        user.estado_cuenta            = User.EstadoCuenta.PENDIENTE
+        user.requiere_cambio_password = False
 
         user.full_clean()
         user.save()
@@ -190,7 +175,4 @@ class RegistroConsumidorPorAdminSerializer(serializers.Serializer):
         perfil = ConsumidorPerfil.objects.create(user=user, **perfil_data)
         DocumentoIdentidad.objects.create(perfil=perfil, **doc_data)
 
-        # Se adjunta al objeto (no persiste) para que la view
-        # pueda devolverla en la respuesta.
-        user._password_temporal = password_temporal
         return user

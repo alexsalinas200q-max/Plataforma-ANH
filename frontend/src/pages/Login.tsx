@@ -1,12 +1,12 @@
 // src/pages/Login.tsx
 
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useAuth } from "../context/AuthContext";
-import { Flame, Eye, EyeOff, LogIn, AlertCircle } from "lucide-react";
+import { Flame, Eye, EyeOff, LogIn, AlertCircle, CheckCircle } from "lucide-react";
 
 const schema = z.object({
   email:    z.string().email("Ingresa un email válido"),
@@ -15,12 +15,30 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>;
 
+const ALERT_TIMEOUT = 4000;
+
 export default function Login() {
   const { login }               = useAuth();
   const navigate                = useNavigate();
   const [showPass, setShowPass] = useState(false);
   const [error, setError]       = useState("");
   const [loading, setLoading]   = useState(false);
+  const location                = useLocation();
+
+  // Mensaje de éxito que llega por navigate state (activación de cuenta
+  // o cambio de contraseña). Se inicializa desde el state —sin setState
+  // dentro de un efecto— y se auto-oculta a los 4s.
+  const [exito, setExito] = useState(
+    () => (location.state as { mensaje?: string } | null)?.mensaje ?? ""
+  );
+
+  useEffect(() => {
+    if (!exito) return;
+    // Limpiar el state del historial para que un refresh no lo repita.
+    navigate(location.pathname, { replace: true, state: null });
+    const timer = setTimeout(() => setExito(""), ALERT_TIMEOUT);
+    return () => clearTimeout(timer);
+  }, [exito, navigate, location.pathname]);
 
   const {
     register,
@@ -36,17 +54,19 @@ export default function Login() {
       navigate("/");
     } catch (err: unknown) {
       const axiosErr = err as {
-        response?: { data?: { detail?: string; non_field_errors?: string[] } }
+        response?: { data?: { detail?: string; non_field_errors?: string[]; code?: string } }
       };
+      // Solo llega con la contraseña correcta (registro público con el
+      // PIN pendiente). Una cuenta pendiente de activación recibe el
+      // mismo error que unas credenciales inválidas — anti-enumeración.
+      if (axiosErr.response?.data?.code === "email_no_verificado") {
+        navigate(`/verificar-email?email=${encodeURIComponent(data.email)}`);
+        return;
+      }
       const msg =
         axiosErr.response?.data?.detail ||
         axiosErr.response?.data?.non_field_errors?.[0] ||
         "Error al iniciar sesión. Verifica tus credenciales.";
-
-      if (msg.includes("verificar su correo")) {
-        navigate(`/verificar-email?email=${encodeURIComponent(data.email)}`);
-        return;
-      }
       setError(msg);
     } finally {
       setLoading(false);
@@ -78,6 +98,13 @@ export default function Login() {
             <h2 className="text-foreground text-xl font-semibold mb-6 text-center">
               Iniciar sesión
             </h2>
+
+            {exito && (
+              <div className="flex items-start gap-3 bg-state-success-bg text-state-success-fg rounded-xl px-4 py-3 mb-5 text-sm">
+                <CheckCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{exito}</span>
+              </div>
+            )}
 
             {error && (
               <div className="flex items-start gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 mb-5 text-sm">
@@ -137,7 +164,13 @@ export default function Login() {
                 )}
               </div>
 
-              <div className="text-right">
+              <div className="flex items-center justify-between gap-3">
+                <Link
+                  to="/reenviar-activacion"
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  ¿No recibiste tu enlace de activación?
+                </Link>
                 <Link
                   to="/recuperar-password"
                   className="text-xs text-muted-foreground hover:text-foreground transition-colors"

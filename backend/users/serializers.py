@@ -8,11 +8,6 @@ from rest_framework import serializers
 
 from .models import User, PerfilFuncionario, TokenVerificacion
 
-# Reutiliza el generador de contraseñas temporales del flujo de
-# registro por admin. serializers_admin solo importa de .models,
-# así que no hay riesgo de import circular.
-from .serializers_admin import _generar_password_temporal
-
 
 # ------------------------------------------------
 # SERIALIZER BASE (LECTURA)
@@ -125,11 +120,11 @@ class CrearFuncionarioSerializer(serializers.Serializer):
     Usado por el administrador para crear funcionarios
     de tipo ADMIN, ANH o ESS en un solo paso.
 
-    La contraseña NO la elige el administrador: la genera el backend
-    y se devuelve una sola vez en la respuesta, igual que en el
-    registro de consumidores por admin. El funcionario queda obligado
-    a cambiarla en su primer ingreso (requiere_cambio_password=True),
-    de modo que el administrador no conserva acceso a su cuenta.
+    La contraseña NO la elige ni la conoce el administrador: la cuenta
+    nace PENDIENTE y con contraseña inutilizable, y el funcionario la
+    define desde el link de activación que le llega por email (la view
+    lo envía, ver services.enviar_activacion). Mismo esquema que el
+    registro de consumidores por admin.
     """
 
     # --- Datos de User ---
@@ -230,11 +225,6 @@ class CrearFuncionarioSerializer(serializers.Serializer):
     @transaction.atomic
     def create(self, validated_data):
 
-        # El backend genera la contraseña temporal: el administrador
-        # nunca la elige y por tanto no queda conociendo la clave
-        # permanente del funcionario.
-        password = _generar_password_temporal()
-
         user_fields = [
             "email", "nombres", "apellido_paterno",
             "apellido_materno", "tipo_usuario",
@@ -249,18 +239,16 @@ class CrearFuncionarioSerializer(serializers.Serializer):
         perfil_data = {k: validated_data[k] for k in perfil_fields if k in validated_data}
 
         user = User(**user_data)
-        user.set_password(password)
-        user.estado_cuenta            = User.EstadoCuenta.ACTIVO
-        user.email_verificado         = True
-        user.requiere_cambio_password = True
+        # PENDIENTE + contraseña inutilizable = activación pendiente
+        # (ver es_activacion_pendiente).
+        user.set_unusable_password()
+        user.estado_cuenta            = User.EstadoCuenta.PENDIENTE
+        user.email_verificado         = False
+        user.requiere_cambio_password = False
         user.full_clean()
         user.save()
 
         PerfilFuncionario.objects.create(user=user, **perfil_data)
-
-        # No persiste: solo viaja hasta la view para incluirla
-        # en la respuesta y que el admin pueda comunicarla.
-        user._password_temporal = password
 
         return user
 
@@ -465,19 +453,27 @@ class LoginSerializer(serializers.Serializer):
                 "Su cuenta ha sido suspendida. Contacte al administrador."
             )
 
-        if not user.email_verificado:
-            raise serializers.ValidationError(
-                "Debe verificar su correo electrónico antes de iniciar sesión."
-            )
-
         usuario_autenticado = authenticate(
             request=self.context.get("request"),
             username=email,
             password=password
         )
 
+        # Anti-enumeración: el chequeo de email verificado va DESPUÉS de
+        # autenticar. Una cuenta pendiente de activación (contraseña
+        # inutilizable) nunca autentica, así que recibe exactamente el
+        # mismo error que unas credenciales inválidas.
         if not usuario_autenticado:
             raise serializers.ValidationError("Credenciales incorrectas.")
+
+        # Solo se llega acá con la contraseña correcta: registro público
+        # con el PIN todavía sin verificar. El code viaja en la respuesta
+        # (ver LoginView) para que el frontend redirija a /verificar-email.
+        if not user.email_verificado:
+            raise serializers.ValidationError(
+                "Debe verificar su correo electrónico antes de iniciar sesión.",
+                code="email_no_verificado",
+            )
 
         attrs["user"] = usuario_autenticado
         return attrs

@@ -119,6 +119,8 @@ const RUTAS_PUBLICAS = [
   "/verificar-email",
   "/recuperar-password",
   "/recuperar-password/confirmar",
+  "/activar-cuenta",
+  "/reenviar-activacion",
 ];
 
 const esRutaPublica = () =>

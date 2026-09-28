@@ -12,15 +12,21 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
 
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
 from rest_framework.parsers import MultiPartParser, FormParser
-from .serializers_admin import RegistroConsumidorPorAdminSerializer, _generar_password_temporal
+from .serializers_admin import RegistroConsumidorPorAdminSerializer
 
 from .models import User, TokenVerificacion
 
 logger = logging.getLogger(__name__)
-from .services import crear_token_verificacion
+from .services import (
+    MENSAJE_RESET_CUENTA_PENDIENTE,
+    crear_token_verificacion,
+    enviar_activacion,
+    es_activacion_pendiente,
+    resetear_password_por_link,
+)
+from .permissions import PuedeReenviarActivacion
 from .email_service import (
     enviar_pin_verificacion,
     enviar_token_recuperacion,
@@ -136,9 +142,9 @@ class CrearFuncionarioView(APIView):
     Solo accesible por administradores del sistema.
     Crea User + PerfilFuncionario en un solo paso.
 
-    La contraseña la genera el backend y se devuelve una única vez
-    en la respuesta para que el administrador la comunique. El
-    funcionario debe cambiarla en su primer ingreso.
+    La cuenta nace PENDIENTE y sin contraseña: el funcionario la
+    define desde el link de activación que se le envía por email.
+    El administrador nunca conoce su contraseña.
     """
 
     permission_classes = [IsAuthenticated]
@@ -166,16 +172,17 @@ class CrearFuncionarioView(APIView):
                 {"email": "Ya existe un funcionario registrado con este correo o documento."}
             )
 
+        # Fuera del atomic de serializer.create(): si la creación se
+        # revirtiera, no debe quedar un email enviado.
+        email_enviado = enviar_activacion(user)
+
         return Response(
             {
-                "detail":            "Funcionario creado exitosamente.",
-                "email":             user.email,
-                "tipo_usuario":      user.tipo_usuario,
-                "password_temporal": user._password_temporal,
-                "aviso": (
-                    "El funcionario deberá cambiar esta contraseña "
-                    "al iniciar sesión por primera vez."
-                ),
+                "detail":        "Funcionario creado exitosamente.",
+                "user_id":       user.id,
+                "email":         user.email,
+                "tipo_usuario":  user.tipo_usuario,
+                "email_enviado": email_enviado,
             },
             status=status.HTTP_201_CREATED
         )
@@ -235,10 +242,18 @@ class LoginView(APIView):
             except User.DoesNotExist:
                 pass
 
-            return Response(
-                serializer.errors,
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            # El único code que se expone es email_no_verificado (solo
+            # posible con la contraseña correcta, ver LoginSerializer):
+            # el frontend lo usa para redirigir a /verificar-email. El
+            # resto de los errores viaja sin code, así una cuenta
+            # pendiente de activación es indistinguible de unas
+            # credenciales inválidas.
+            body = dict(serializer.errors)
+            errores = serializer.errors.get("non_field_errors", [])
+            if errores and getattr(errores[0], "code", None) == "email_no_verificado":
+                body["code"] = "email_no_verificado"
+
+            return Response(body, status=status.HTTP_400_BAD_REQUEST)
 
         user = serializer.validated_data["user"]
 
@@ -444,6 +459,14 @@ class RecuperarPasswordView(APIView):
     """
     Permite cambiar la contraseña usando el token
     de recuperación recibido por correo.
+
+    Sirve también para la activación de cuentas creadas por admin
+    (mismo tipo de token RECUP): si la cuenta está PENDIENTE, completar
+    el link la deja ACTIVO y con el email verificado — el usuario
+    demostró que controla el correo. Una cuenta SUSPENDIDO cambia la
+    contraseña pero sigue suspendida. No blacklistea sesiones: en la
+    activación no hay sesiones previas, y en la recuperación el reset
+    por admin ya las cerró.
     """
 
     permission_classes = [AllowAny]
@@ -460,13 +483,26 @@ class RecuperarPasswordView(APIView):
             user = token_obj.user
             user.set_password(password_nuevo)
             user.requiere_cambio_password = False
-            user.save(update_fields=["password", "requiere_cambio_password"])
+            campos = ["password", "requiere_cambio_password"]
+
+            activada = user.estado_cuenta == User.EstadoCuenta.PENDIENTE
+            if activada:
+                user.estado_cuenta    = User.EstadoCuenta.ACTIVO
+                user.email_verificado = True
+                campos += ["estado_cuenta", "email_verificado"]
+
+            user.save(update_fields=campos)
 
             token_obj.usado = True
             token_obj.save(update_fields=["usado"])
 
         return Response(
-            {"detail": "Contraseña actualizada correctamente."},
+            {
+                "detail": (
+                    "Cuenta activada correctamente." if activada
+                    else "Contraseña actualizada correctamente."
+                )
+            },
             status=status.HTTP_200_OK
         )
 
@@ -586,6 +622,15 @@ class ReenviarPinView(APIView):
             return Response(
                 {"detail": "Esta cuenta ya está verificada. Inicia sesión normalmente."},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Cuenta creada por admin: se activa con el link, no con PIN.
+        # Verificarla por PIN la dejaría ACTIVO sin contraseña usable.
+        # Misma respuesta que un email inexistente.
+        if es_activacion_pendiente(user):
+            return Response(
+                {"detail": "Si el correo está registrado y no verificado, recibirás un nuevo PIN."},
+                status=status.HTTP_200_OK
             )
 
         # Invalidar PINs anteriores y generar uno nuevo
@@ -834,6 +879,20 @@ class FuncionarioCambiarEstadoView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Una cuenta pendiente se activa solo con el link (define su
+        # contraseña y verifica el email). Activarla a mano la dejaría
+        # ACTIVO sin contraseña; suspenderla la sacaría del reenvío.
+        if u.estado_cuenta == User.EstadoCuenta.PENDIENTE:
+            return Response(
+                {
+                    "detail": (
+                        "La cuenta aún no fue activada por el usuario. "
+                        "Reenvía el enlace de activación."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         nuevo_estado = request.data.get("estado_cuenta")
         if nuevo_estado not in [
             User.EstadoCuenta.ACTIVO,
@@ -855,14 +914,14 @@ class FuncionarioCambiarEstadoView(APIView):
 
 class FuncionarioResetearPasswordView(APIView):
     """
-    Resetea la contraseña de un funcionario (ADMIN/ANH/ESS) cuando
-    la olvidó y el flujo público de recuperación por email no es una
-    opción (Brevo aún no está configurado en producción).
+    Resetea la contraseña de un funcionario (ADMIN/ANH/ESS) por link.
 
     Solo ADMIN puede usarlo, y no puede resetear su propia contraseña
     por esta vía (para eso está el cambio normal con contraseña actual,
-    en CambiarPasswordView). Genera una contraseña temporal, fuerza
-    requiere_cambio_password y cierra las sesiones activas del usuario.
+    en CambiarPasswordView). La contraseña actual queda inutilizable,
+    se cierran las sesiones y el usuario recibe un link para definir
+    una nueva (ver services.resetear_password_por_link). Nadie ve la
+    contraseña.
     """
     permission_classes = [IsAuthenticated]
 
@@ -889,21 +948,15 @@ class FuncionarioResetearPasswordView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
-        password_temporal = _generar_password_temporal()
-        usuario.set_password(password_temporal)
-        usuario.requiere_cambio_password = True
-        usuario.save(update_fields=["password", "requiere_cambio_password"])
+        # Todavía no creó su contraseña: lo que corresponde es reenviar
+        # el link de activación, no resetear.
+        if es_activacion_pendiente(usuario):
+            return Response(
+                {"detail": MENSAJE_RESET_CUENTA_PENDIENTE},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Cierra las sesiones activas del usuario blacklisteando todos sus
-        # refresh tokens outstanding (mismo mecanismo que usa LogoutView
-        # para el token de la request actual, aplicado acá a todos los
-        # suyos). LIMITACIÓN CONOCIDA Y ACEPTADA: esto no revoca el access
-        # token que el usuario ya tenga en memoria — al no consultarse la
-        # blacklist en cada request autenticada, seguirá siendo válido
-        # hasta su propia expiración (máx. 30 min, ACCESS_TOKEN_LIFETIME).
-        # Es la misma ventana que ya existe hoy con el logout normal.
-        for token in OutstandingToken.objects.filter(user=usuario):
-            BlacklistedToken.objects.get_or_create(token=token)
+        email_enviado = resetear_password_por_link(usuario)
 
         # Acción sensible sobre la cuenta de otro usuario: sin un sistema
         # de auditoría todavía, al menos queda registrada en los logs.
@@ -914,13 +967,9 @@ class FuncionarioResetearPasswordView(APIView):
 
         return Response(
             {
-                "detail":            "Contraseña reseteada correctamente.",
-                "email":             usuario.email,
-                "password_temporal": password_temporal,
-                "aviso": (
-                    "Comparte esta contraseña con el usuario. Deberá "
-                    "cambiarla al iniciar sesión."
-                ),
+                "detail":        "Contraseña reseteada. Se envió un enlace al usuario.",
+                "email":         usuario.email,
+                "email_enviado": email_enviado,
             },
             status=status.HTTP_200_OK
         )
@@ -938,12 +987,10 @@ class RegistroConsumidorPorAdminView(APIView):
     (típicamente en atención presencial).
 
     A diferencia del auto-registro público:
-      - El admin no elige contraseña — la genera el backend
-      - No se envía PIN de verificación (el admin verifica al consumidor
-        presencialmente contra su documento físico)
-      - El email queda marcado como verificado
-      - Se devuelve la contraseña temporal para que el admin la comparta
-        con el consumidor
+      - Nadie elige contraseña al crear la cuenta: el consumidor la
+        define desde el link de activación que recibe por email
+      - No se envía PIN: completar el link verifica el email
+      - La cuenta queda PENDIENTE hasta que el consumidor usa el link
 
     Solo usuarios ANH o ADMIN autenticados pueden llamar este endpoint.
     """
@@ -964,16 +1011,88 @@ class RegistroConsumidorPorAdminView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
+        # Fuera del atomic de serializer.create() (ver CrearFuncionarioView).
+        email_enviado = enviar_activacion(user)
+
         return Response(
             {
-                "message":           "Consumidor registrado correctamente",
-                "user_id":           user.id,
-                "email":             user.email,
-                "password_temporal": user._password_temporal,
-                "aviso": (
-                    "El consumidor deberá cambiar esta contraseña al iniciar "
-                    "sesión por primera vez."
-                ),
+                "message":       "Consumidor registrado correctamente",
+                "user_id":       user.id,
+                "email":         user.email,
+                "email_enviado": email_enviado,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+# ------------------------------------------------
+# REENVÍO DEL LINK DE ACTIVACIÓN
+# ------------------------------------------------
+
+class ReenviarActivacionView(APIView):
+    """
+    POST /api/users/auth/reenviar-activacion/   body: {email}
+
+    Reenvío público (desde el login). Si el email corresponde a una
+    cuenta pendiente de activación, invalida los links anteriores y
+    envía uno nuevo. Responde siempre lo mismo, exista o no el email,
+    para no revelar qué cuentas existen ni en qué estado están.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email", "")
+        email = email.lower().strip() if isinstance(email, str) else ""
+
+        user = User.objects.filter(email__iexact=email).first() if email else None
+        if user and es_activacion_pendiente(user):
+            enviar_activacion(user)
+
+        return Response(
+            {
+                "detail": (
+                    "Si el correo corresponde a una cuenta pendiente de "
+                    "activación, recibirás un nuevo enlace en los próximos minutos."
+                )
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class ReenviarActivacionStaffView(APIView):
+    """
+    POST /api/users/usuarios/<user_id>/reenviar-activacion/
+
+    Reenvío desde el panel. ADMIN a cualquier usuario, ANH solo a
+    consumidores (PuedeReenviarActivacion). A diferencia del reenvío
+    público, acá sí se informa el resultado: quien llama ya ve el
+    estado de la cuenta en el panel.
+    """
+
+    permission_classes = [PuedeReenviarActivacion]
+
+    def post(self, request, user_id):
+        try:
+            usuario = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        self.check_object_permissions(request, usuario)
+
+        if not es_activacion_pendiente(usuario):
+            return Response(
+                {"detail": "Esta cuenta no está pendiente de activación."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email_enviado = enviar_activacion(usuario)
+
+        return Response(
+            {
+                "detail":        "Se envió un nuevo enlace de activación.",
+                "email":         usuario.email,
+                "email_enviado": email_enviado,
+            },
+            status=status.HTTP_200_OK
         )

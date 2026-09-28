@@ -108,3 +108,21 @@ class IsAdminOrANHOrESS(HasRole):
         User.TipoUsuario.ANH,
         User.TipoUsuario.ESS,
     ]
+
+# ------------------------------------------------
+# PERMISOS CON NIVEL DE OBJETO
+# ------------------------------------------------
+
+class PuedeReenviarActivacion(IsAdminOrANH):
+    """
+    Reenvío del link de activación por staff.
+    ADMIN puede reenviar a cualquier usuario; ANH solo a consumidores
+    (mismo alcance que su registro de consumidores por admin).
+    El objeto es el User destino — la view debe llamar a
+    check_object_permissions().
+    """
+
+    def has_object_permission(self, request, view, obj):
+        if request.user.tipo_usuario == User.TipoUsuario.ADMIN:
+            return True
+        return obj.tipo_usuario == User.TipoUsuario.CONS

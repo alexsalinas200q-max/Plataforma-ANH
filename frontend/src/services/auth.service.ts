@@ -3,11 +3,11 @@
 import { api } from "../context/AuthContext";
 
 export interface RegistroPorAdminResponse {
-  message:           string;
-  user_id:           number;
-  email:             string;
-  password_temporal: string;
-  aviso:             string;
+  message:       string;
+  user_id:       number;
+  email:         string;
+  // false si Brevo falló: la cuenta existe igual, hay que reenviar el link.
+  email_enviado: boolean;
 }
 
 export const authService = {
@@ -20,9 +20,9 @@ export const authService = {
     });
   },
 
-  // Registro por admin (ANH/ADMIN) — el backend genera contraseña temporal,
-  // el email queda verificado y no se envía PIN. La contraseña se devuelve
-  // en la respuesta para que el admin la comparta con el consumidor.
+  // Registro por admin (ANH/ADMIN) — la cuenta queda PENDIENTE y el
+  // consumidor recibe un link de activación para crear su contraseña.
+  // Nadie ve la contraseña.
   registroPorAdmin: async (formData: FormData): Promise<RegistroPorAdminResponse> => {
     const res = await api.post(
       "/api/users/registro/consumidor-por-admin/",
@@ -57,6 +57,12 @@ export const authService = {
 
   reenviarPin: async (email: string): Promise<void> => {
     await api.post("/api/users/auth/reenviar-pin/", { email });
+  },
+
+  // Reenvío público del link de activación. El backend responde
+  // siempre lo mismo, exista o no la cuenta (anti-enumeración).
+  reenviarActivacion: async (email: string): Promise<void> => {
+    await api.post("/api/users/auth/reenviar-activacion/", { email });
   },
 
   cambiarPassword: async (

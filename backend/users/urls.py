@@ -20,6 +20,8 @@ from .views import (
     CambiarPasswordObligatorioView,
     MiPerfilView,
     RegistroConsumidorPorAdminView,
+    ReenviarActivacionView,
+    ReenviarActivacionStaffView,
 )
 
 urlpatterns = [
@@ -40,6 +42,11 @@ urlpatterns = [
     path("funcionarios/<int:user_id>/resetear-password/", FuncionarioResetearPasswordView.as_view(), name="funcionario-resetear-password"),
 
     # ------------------------------------------------
+    # ACTIVACIÓN DE CUENTA (ADMIN → cualquier usuario, ANH → consumidores)
+    # ------------------------------------------------
+    path("usuarios/<int:user_id>/reenviar-activacion/", ReenviarActivacionStaffView.as_view(), name="usuario-reenviar-activacion"),
+
+    # ------------------------------------------------
     # AUTENTICACIÓN
     # ------------------------------------------------
     path("auth/login/",                    LoginView.as_view(),                name="login"),
@@ -49,6 +56,7 @@ urlpatterns = [
     path("auth/recuperar-password/",       SolicitarRecuperacionView.as_view(), name="solicitar-recuperacion"),
     path("auth/recuperar-password/confirmar/", RecuperarPasswordView.as_view(), name="recuperar-password"),
     path("auth/reenviar-pin/",             ReenviarPinView.as_view(),           name="reenviar-pin"),
+    path("auth/reenviar-activacion/",      ReenviarActivacionView.as_view(),    name="reenviar-activacion"),
 
     # ------------------------------------------------
     # PERFIL Y CONTRASEÑA

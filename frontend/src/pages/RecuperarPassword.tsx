@@ -14,7 +14,37 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>;
 
-export default function RecuperarPassword() {
+// También sirve de formulario público para reenviar el link de
+// activación (cuentas creadas por un administrador). En ambos modos el
+// backend responde siempre lo mismo, exista o no el email.
+type Modo = "recuperacion" | "activacion";
+
+const textos: Record<Modo, {
+  subtitulo:   string;
+  titulo:      string;
+  descripcion: string;
+  exito:       string;
+}> = {
+  recuperacion: {
+    subtitulo:   "Recuperar contraseña",
+    titulo:      "¿Olvidaste tu contraseña?",
+    descripcion: "Ingresa tu correo y te enviaremos un enlace para restablecerla.",
+    exito:       "Si el correo está registrado, recibirás un enlace para restablecer tu contraseña en los próximos minutos.",
+  },
+  activacion: {
+    subtitulo:   "Activar cuenta",
+    titulo:      "¿No recibiste tu enlace de activación?",
+    descripcion: "Ingresa el correo con el que te registraron y te enviaremos un nuevo enlace para activar tu cuenta.",
+    exito:       "Si el correo corresponde a una cuenta pendiente de activación, recibirás un nuevo enlace en los próximos minutos.",
+  },
+};
+
+interface Props {
+  modo?: Modo;
+}
+
+export default function RecuperarPassword({ modo = "recuperacion" }: Props) {
+  const t = textos[modo];
   const [enviado,  setEnviado]  = useState(false);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState("");
@@ -27,7 +57,11 @@ export default function RecuperarPassword() {
     setLoading(true);
     setError("");
     try {
-      await authService.recuperarPassword(data.email);
+      if (modo === "activacion") {
+        await authService.reenviarActivacion(data.email);
+      } else {
+        await authService.recuperarPassword(data.email);
+      }
       setEnviado(true);
     } catch {
       setError("Error al procesar la solicitud. Intenta nuevamente.");
@@ -52,7 +86,7 @@ export default function RecuperarPassword() {
               <Flame className="w-8 h-8 text-primary-foreground" strokeWidth={2.5} />
             </div>
             <h1 className="text-navbar-foreground text-2xl font-bold">ANH Bolivia</h1>
-            <p className="text-navbar-muted text-sm mt-1">Recuperar contraseña</p>
+            <p className="text-navbar-muted text-sm mt-1">{t.subtitulo}</p>
           </div>
 
           <div className="px-8 py-8">
@@ -67,8 +101,7 @@ export default function RecuperarPassword() {
                   Revisa tu correo
                 </h2>
                 <p className="text-muted-foreground text-sm">
-                  Si el correo está registrado, recibirás un enlace
-                  para restablecer tu contraseña en los próximos minutos.
+                  {t.exito}
                 </p>
                 <div className="bg-primary/10 rounded-xl px-4 py-3 text-xs text-primary">
                   Revisa también tu carpeta de spam o correo no deseado.
@@ -84,10 +117,10 @@ export default function RecuperarPassword() {
             ) : (
               <>
                 <h2 className="text-foreground text-xl font-semibold mb-2 text-center">
-                  ¿Olvidaste tu contraseña?
+                  {t.titulo}
                 </h2>
                 <p className="text-muted-foreground text-sm text-center mb-6">
-                  Ingresa tu correo y te enviaremos un enlace para restablecerla.
+                  {t.descripcion}
                 </p>
 
                 {error && (

@@ -50,8 +50,7 @@ export const consumidoresService = {
   resetearPassword: async (id: number): Promise<{
     detail: string;
     email: string;
-    password_temporal: string;
-    aviso: string;
+    email_enviado: boolean;
   }> => {
     const res = await api.post(`/api/consumidores/${id}/resetear-password/`);
     return res.data;

@@ -42,6 +42,7 @@ export interface ConsumidorPerfil {
     nombres:         string;
     apellido_paterno: string;
     apellido_materno: string;
+    estado_cuenta:   "PENDIENTE" | "ACTIVO" | "SUSPENDIDO";
   };
   fecha_nacimiento:         string;
   celular:                  string;

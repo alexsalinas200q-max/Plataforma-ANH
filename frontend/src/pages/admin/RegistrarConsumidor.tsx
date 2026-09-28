@@ -12,12 +12,13 @@ import { Alert } from "../../components/ui/Alert";
 import { Modal } from "../../components/ui/Modal";
 import { Stepper } from "../../components/ui/Stepper";
 import { authService } from "../../services/auth.service";
+import { usersService } from "../../services/users.service";
 import { catalogosService } from "../../services/catalogos.service";
 import { ACTIVIDADES, TIPOS_DOCUMENTO } from "../../utils/constants";
 import type { Departamento, Provincia, Municipio } from "../../types/consumidor.types";
 import {
   UserPlus, ArrowLeft, ArrowRight, CheckCircle,
-  ImagePlus, X, Info, Copy,
+  ImagePlus, X, Info, Mail, Send,
 } from "lucide-react";
 
 // ------------------------------------------------
@@ -83,12 +84,15 @@ export default function RegistrarConsumidor() {
   const [enviando,   setEnviando]   = useState(false);
   const [errorForm,  setErrorForm]  = useState("");
 
-  // Datos de éxito para el modal (incluye contraseña temporal)
+  // Datos de éxito para el modal. No hay contraseña: el consumidor
+  // recibe un link de activación. emailEnviado=false si el envío falló.
   const [exitoData, setExitoData] = useState<{
-    nombre:   string;
-    email:    string;
-    password: string;
+    nombre:       string;
+    email:        string;
+    emailEnviado: boolean;
+    userId:       number;
   } | null>(null);
+  const [reenviando, setReenviando] = useState(false);
 
   const {
     register, handleSubmit, watch, setValue, trigger,
@@ -200,7 +204,8 @@ export default function RegistrarConsumidor() {
       setExitoData({
         nombre:   `${data.nombres} ${data.apellido_paterno}`,
         email:    res.email,
-        password: res.password_temporal,
+        emailEnviado: res.email_enviado,
+        userId:       res.user_id,
       });
     } catch (err: unknown) {
       // El backend puede devolver un string plano o un objeto de errores
@@ -225,6 +230,17 @@ export default function RegistrarConsumidor() {
     } finally {
       setEnviando(false);
     }
+  };
+
+  const reenviarActivacion = async () => {
+    if (!exitoData) return;
+    setReenviando(true);
+    try {
+      const res = await usersService.reenviarActivacion(exitoData.userId);
+      setExitoData({ ...exitoData, emailEnviado: res.email_enviado });
+    } catch {
+      setExitoData({ ...exitoData, emailEnviado: false });
+    } finally { setReenviando(false); }
   };
 
   const inputCls  = "w-full px-4 py-2.5 rounded-xl border border-border text-sm bg-input focus:border-primary focus:ring-2 focus:ring-primary/20 focus:bg-card outline-none";
@@ -535,7 +551,7 @@ export default function RegistrarConsumidor() {
         </Card>
       </div>
 
-      {/* MODAL DE ÉXITO CON CONTRASEÑA TEMPORAL */}
+      {/* MODAL DE ÉXITO (enlace de activación enviado) */}
       <Modal open={!!exitoData} onClose={() => {}} title="" size="md">
         {exitoData && (
           <div className="py-2">
@@ -549,38 +565,33 @@ export default function RegistrarConsumidor() {
               </p>
             </div>
 
-            <Alert
-              type="warning"
-              message="Guarda esta contraseña. Deberás compartirla con el consumidor para que pueda ingresar. Solo se muestra una vez."
-            />
-
-            <div className="mt-4 space-y-3">
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Email</p>
-                <p className="text-sm font-medium text-foreground">{exitoData.email}</p>
+            {exitoData.emailEnviado ? (
+              <div className="flex items-start gap-3 bg-background border border-border rounded-xl px-4 py-3">
+                <Mail className="w-4 h-4 text-state-success-fg shrink-0 mt-0.5" />
+                <p className="text-sm text-foreground">
+                  Se envió un enlace de activación a <strong>{exitoData.email}</strong>.
+                </p>
               </div>
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Contraseña temporal</p>
-                <div className="flex gap-2">
-                  <input
-                    readOnly
-                    value={exitoData.password}
-                    className={inputCls + " font-mono"}
-                  />
-                  <Button
-                    variant="outline"
-                    icon={<Copy className="w-4 h-4" />}
-                    onClick={() => navigator.clipboard.writeText(exitoData.password)}
-                  >
-                    Copiar
-                  </Button>
-                </div>
+            ) : (
+              <div className="space-y-3">
+                <Alert
+                  type="warning"
+                  message={`El consumidor se registró, pero no se pudo enviar el email de activación a ${exitoData.email}. Reenvía el enlace.`}
+                />
+                <Button variant="outline" icon={<Send className="w-4 h-4" />}
+                  loading={reenviando} onClick={reenviarActivacion} className="w-full">
+                  Reenviar enlace
+                </Button>
               </div>
-            </div>
+            )}
 
             <div className="flex items-start gap-2 text-xs text-muted-foreground mt-3">
               <Info className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>El consumidor deberá cambiar esta contraseña al iniciar sesión por primera vez.</span>
+              <span>
+                El consumidor debe abrir el enlace y crear su contraseña para activar
+                la cuenta. El enlace vence en 72 horas; si vence, puede pedir uno
+                nuevo desde la pantalla de inicio de sesión.
+              </span>
             </div>
 
             <div className="flex flex-col gap-2 mt-5">

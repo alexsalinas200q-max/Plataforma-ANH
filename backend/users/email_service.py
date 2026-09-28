@@ -126,19 +126,42 @@ Bolivia
 # 2. RECUPERACIÓN DE CONTRASEÑA (TOKEN UUID)
 # ------------------------------------------------
 
-def enviar_token_recuperacion(user, token_uuid: str) -> bool:
+def enviar_token_recuperacion(user, token_uuid: str, por_admin: bool = False) -> bool:
+    """
+    por_admin=True: reset iniciado por un administrador. La contraseña
+    anterior ya quedó inutilizable, así que el cierre del mensaje
+    cambia (no se puede decir que "permanecerá sin cambios").
+    """
     from configuracion.models import ConfiguracionSistema
     config = ConfiguracionSistema.obtener()
 
     frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
     enlace = f"{frontend_url}/recuperar-password/confirmar?token={token_uuid}"
 
+    if por_admin:
+        intro = (
+            "Un administrador restableció la contraseña de tu cuenta\n"
+            "en el sistema ANH. Tu contraseña anterior ya no es válida."
+        )
+        cierre = (
+            "Si el enlace vence, puedes pedir uno nuevo desde\n"
+            "\"¿Olvidaste tu contraseña?\" en la pantalla de inicio de sesión."
+        )
+    else:
+        intro = (
+            "Recibimos una solicitud para restablecer la contraseña de tu cuenta\n"
+            "en el sistema ANH."
+        )
+        cierre = (
+            "Si no solicitaste este cambio, ignora este mensaje.\n"
+            "Tu contraseña actual permanecerá sin cambios."
+        )
+
     asunto  = "Recuperación de contraseña — ANH"
     mensaje = f"""
 Hola {user.nombres},
 
-Recibimos una solicitud para restablecer la contraseña de tu cuenta
-en el sistema ANH.
+{intro}
 
 Haz clic en el siguiente enlace para crear una nueva contraseña:
 
@@ -146,8 +169,41 @@ Haz clic en el siguiente enlace para crear una nueva contraseña:
 
 Este enlace expira en {config.tiempo_expiracion_token_recuperacion_horas} hora(s).
 
-Si no solicitaste este cambio, ignora este mensaje.
-Tu contraseña actual permanecerá sin cambios.
+{cierre}
+
+Agencia Nacional de Hidrocarburos
+Bolivia
+""".strip()
+
+    return _enviar_email(asunto, mensaje, user.email)
+
+
+# ------------------------------------------------
+# 2b. ACTIVACIÓN DE CUENTA CREADA POR ADMIN (TOKEN UUID)
+# ------------------------------------------------
+
+def enviar_link_activacion(user, token_uuid: str) -> bool:
+    from .services import HORAS_EXPIRACION_ACTIVACION
+
+    frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
+    enlace = f"{frontend_url}/activar-cuenta?token={token_uuid}"
+
+    asunto  = "Activa tu cuenta — ANH"
+    mensaje = f"""
+Hola {user.nombres},
+
+Bienvenido al sistema de solicitudes de combustible de la
+Agencia Nacional de Hidrocarburos (ANH). Un administrador creó
+tu cuenta con este correo.
+
+Crea tu contraseña en el siguiente enlace para activarla:
+
+    {enlace}
+
+Este enlace expira en {HORAS_EXPIRACION_ACTIVACION} horas. Si vence, puedes pedir
+uno nuevo desde la pantalla de inicio de sesión.
+
+Si no esperabas este mensaje, ignóralo.
 
 Agencia Nacional de Hidrocarburos
 Bolivia

@@ -19,7 +19,60 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>;
 
-export default function ConfirmarRecuperacion() {
+// La misma pantalla sirve para recuperar la contraseña y para activar
+// una cuenta creada por un administrador: ambos flujos usan el mismo
+// token RECUP y el mismo endpoint (el backend activa la cuenta si
+// está PENDIENTE). Solo cambian los textos y a dónde se pide un
+// enlace nuevo.
+type Modo = "recuperacion" | "activacion";
+
+const textos: Record<Modo, {
+  subtitulo:     string;
+  titulo:        string;
+  descripcion:   string;
+  boton:         string;
+  guardando:     string;
+  errorDefault:  string;
+  sinToken:      string;
+  exitoTitulo:   string;
+  exitoTexto:    string;
+  rutaNuevoLink: string;
+  textoNuevoLink: string;
+}> = {
+  recuperacion: {
+    subtitulo:      "Nueva contraseña",
+    titulo:         "Crea tu nueva contraseña",
+    descripcion:    "Ingresa y confirma tu nueva contraseña.",
+    boton:          "Cambiar contraseña",
+    guardando:      "Guardando...",
+    errorDefault:   "Error al cambiar la contraseña. El enlace puede haber expirado.",
+    sinToken:       "Enlace inválido. Solicita un nuevo enlace de recuperación.",
+    exitoTitulo:    "¡Contraseña actualizada!",
+    exitoTexto:     "Tu contraseña fue cambiada exitosamente. Serás redirigido al login en unos segundos...",
+    rutaNuevoLink:  "/recuperar-password",
+    textoNuevoLink: "Solicitar un nuevo enlace",
+  },
+  activacion: {
+    subtitulo:      "Activar cuenta",
+    titulo:         "Bienvenido",
+    descripcion:    "Crea tu contraseña para activar tu cuenta.",
+    boton:          "Activar cuenta",
+    guardando:      "Activando...",
+    errorDefault:   "No se pudo activar la cuenta. El enlace puede haber expirado.",
+    sinToken:       "Enlace inválido. Solicita un nuevo enlace de activación.",
+    exitoTitulo:    "¡Cuenta activada!",
+    exitoTexto:     "Tu cuenta está activa. Serás redirigido al login en unos segundos...",
+    rutaNuevoLink:  "/reenviar-activacion",
+    textoNuevoLink: "Solicitar un nuevo enlace de activación",
+  },
+};
+
+interface Props {
+  modo?: Modo;
+}
+
+export default function ConfirmarRecuperacion({ modo = "recuperacion" }: Props) {
+  const t = textos[modo];
   const navigate                    = useNavigate();
   const [searchParams]              = useSearchParams();
   const token                       = searchParams.get("token") ?? "";
@@ -36,7 +89,7 @@ export default function ConfirmarRecuperacion() {
 
   const onSubmit = async (data: FormData) => {
     if (!token) {
-      setError("Token inválido. Solicita un nuevo enlace de recuperación.");
+      setError(t.sinToken);
       return;
     }
     setLoading(true);
@@ -44,13 +97,17 @@ export default function ConfirmarRecuperacion() {
     try {
       await authService.confirmarRecuperacion(token, data.password, data.password2);
       setExito(true);
-      setTimeout(() => navigate("/login"), 3000);
+      setTimeout(() => navigate("/login", {
+        state: { mensaje: modo === "activacion"
+          ? "Cuenta activada. Ya puedes iniciar sesión."
+          : "Contraseña actualizada. Ya puedes iniciar sesión." },
+      }), 3000);
     } catch (err: unknown) {
       const e = err as { response?: { data?: { detail?: string; non_field_errors?: string[] } } };
       const msg =
         e.response?.data?.detail ||
         e.response?.data?.non_field_errors?.[0] ||
-        "Error al cambiar la contraseña. El enlace puede haber expirado.";
+        t.errorDefault;
       setError(msg);
     } finally {
       setLoading(false);
@@ -80,7 +137,7 @@ export default function ConfirmarRecuperacion() {
               <Flame className="w-8 h-8 text-primary-foreground" strokeWidth={2.5} />
             </div>
             <h1 className="text-navbar-foreground text-2xl font-bold">ANH Bolivia</h1>
-            <p className="text-navbar-muted text-sm mt-1">Nueva contraseña</p>
+            <p className="text-navbar-muted text-sm mt-1">{t.subtitulo}</p>
           </div>
 
           <div className="px-8 py-8">
@@ -92,11 +149,10 @@ export default function ConfirmarRecuperacion() {
                   <CheckCircle className="w-8 h-8 text-state-success-fg" />
                 </div>
                 <h2 className="text-foreground text-xl font-semibold">
-                  ¡Contraseña actualizada!
+                  {t.exitoTitulo}
                 </h2>
                 <p className="text-muted-foreground text-sm">
-                  Tu contraseña fue cambiada exitosamente.
-                  Serás redirigido al login en unos segundos...
+                  {t.exitoTexto}
                 </p>
                 <Link
                   to="/login"
@@ -108,25 +164,28 @@ export default function ConfirmarRecuperacion() {
             ) : (
               <>
                 <h2 className="text-foreground text-xl font-semibold mb-2 text-center">
-                  Crea tu nueva contraseña
+                  {t.titulo}
                 </h2>
                 <p className="text-muted-foreground text-sm text-center mb-6">
-                  Ingresa y confirma tu nueva contraseña.
+                  {t.descripcion}
                 </p>
 
                 {!token && (
                   <div className="flex items-start gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 mb-5 text-sm">
                     <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                    <span>
-                      Enlace inválido. Solicita un nuevo enlace de recuperación.
-                    </span>
+                    <span>{t.sinToken}</span>
                   </div>
                 )}
 
                 {error && (
                   <div className="flex items-start gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 mb-5 text-sm">
                     <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                    <span>{error}</span>
+                    <span>
+                      {error}{" "}
+                      <Link to={t.rutaNuevoLink} className="font-medium underline">
+                        {t.textoNuevoLink}
+                      </Link>
+                    </span>
                   </div>
                 )}
 
@@ -190,7 +249,7 @@ export default function ConfirmarRecuperacion() {
                       ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                       : <CheckCircle className="w-4 h-4" />
                     }
-                    {loading ? "Guardando..." : "Cambiar contraseña"}
+                    {loading ? t.guardando : t.boton}
                   </button>
                 </form>
 

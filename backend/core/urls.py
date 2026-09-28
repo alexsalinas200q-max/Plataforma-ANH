@@ -29,7 +29,9 @@ urlpatterns = [
     #   POST   api/users/auth/logout/
     #   POST   api/users/auth/verificar-email/
     #   POST   api/users/auth/recuperar-password/
-    #   POST   api/users/auth/recuperar-password/confirmar/
+    #   POST   api/users/auth/recuperar-password/confirmar/   (también activa cuentas PENDIENTE)
+    #   POST   api/users/auth/reenviar-activacion/
+    #   POST   api/users/usuarios/{id}/reenviar-activacion/
     #   POST   api/users/auth/cambiar-password/
     #   GET    api/users/me/
     # ------------------------------------------------

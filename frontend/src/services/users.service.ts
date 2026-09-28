@@ -65,22 +65,20 @@ export interface CrearFuncionarioPayload {
   estacion_servicio?: number;
 }
 
-// La contraseña la genera el backend y solo se devuelve una vez.
+// Ni el alta ni el reset devuelven contraseña: el usuario recibe un
+// link por email. email_enviado=false si el envío falló.
 export interface CrearFuncionarioResponse {
-  detail:            string;
-  email:             string;
-  tipo_usuario:      string;
-  password_temporal: string;
-  aviso:             string;
+  detail:        string;
+  user_id:       number;
+  email:         string;
+  tipo_usuario:  string;
+  email_enviado: boolean;
 }
 
-// Misma forma que CrearFuncionarioResponse, sin tipo_usuario
-// (el reset no crea una cuenta nueva, no aplica).
-export interface ResetearPasswordResponse {
-  detail:            string;
-  email:             string;
-  password_temporal: string;
-  aviso:             string;
+export interface EnlaceEnviadoResponse {
+  detail:        string;
+  email:         string;
+  email_enviado: boolean;
 }
 
 // Payload para editar
@@ -134,8 +132,15 @@ export const usersService = {
     return res.data;
   },
 
-  resetearPassword: async (id: number): Promise<ResetearPasswordResponse> => {
+  resetearPassword: async (id: number): Promise<EnlaceEnviadoResponse> => {
     const res = await api.post(`/api/users/funcionarios/${id}/resetear-password/`);
+    return res.data;
+  },
+
+  // {id} es el id de User (no de perfil). ADMIN: cualquier usuario;
+  // ANH: solo consumidores (403 si no).
+  reenviarActivacion: async (id: number): Promise<EnlaceEnviadoResponse> => {
+    const res = await api.post(`/api/users/usuarios/${id}/reenviar-activacion/`);
     return res.data;
   },
 };
