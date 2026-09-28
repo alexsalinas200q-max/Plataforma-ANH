@@ -104,7 +104,7 @@ class ConsumidorPerfil(models.Model):
     fecha_actualizacion = models.DateTimeField(auto_now=True)
 
     def es_mayor_de_edad(self) -> bool:
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         edad = (
             hoy.year - self.fecha_nacimiento.year
             - (

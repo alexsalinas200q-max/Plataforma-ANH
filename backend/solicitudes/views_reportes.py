@@ -70,7 +70,7 @@ class ReporteConsumidoresView(APIView):
         )
 
         from django.utils import timezone
-        fecha_str = timezone.now().strftime("%Y%m%d_%H%M")
+        fecha_str = timezone.localtime().strftime("%Y%m%d_%H%M")
         nombre    = f"reporte_ANH_{filtro}_{fecha_str}"
 
         if formato == "PDF":

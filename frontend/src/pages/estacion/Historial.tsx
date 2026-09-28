@@ -8,7 +8,7 @@ import { Spinner } from "../../components/ui/Spinner";
 import { solicitudesService } from "../../services/solicitudes.service";
 import type { Solicitud } from "../../types/solicitud.types";
 import { COMBUSTIBLES } from "../../utils/constants";
-import { formatFecha, formatLitros, formatIdPublico } from "../../utils/format";
+import { formatFecha, formatLitros, formatIdPublico, fechaLocalISO } from "../../utils/format";
 import { useAuth } from "../../context/AuthContext";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -33,14 +33,14 @@ const despachoDesde = (periodo: Periodo): string | null => {
 
   switch (periodo) {
     case "hoy":
-      return hoy.toISOString().slice(0, 10);
+      return fechaLocalISO(hoy);
     case "7dias": {
       const d = new Date(hoy);
       d.setDate(d.getDate() - 6);
-      return d.toISOString().slice(0, 10);
+      return fechaLocalISO(d);
     }
     case "mes":
-      return new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().slice(0, 10);
+      return fechaLocalISO(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
     case "todo":
       return null;
   }

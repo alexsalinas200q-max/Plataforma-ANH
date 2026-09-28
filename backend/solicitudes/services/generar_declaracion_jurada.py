@@ -2,7 +2,9 @@
 
 import io
 
-from django.utils import timezone
+from core.fechas import (
+    ahora_local, formatear_fecha, formatear_fecha_hora, formatear_fecha_larga,
+)
 
 
 def generar_declaracion_jurada(solicitud) -> bytes:
@@ -91,7 +93,7 @@ def generar_declaracion_jurada(solicitud) -> bytes:
             "AGENCIA NACIONAL DE HIDROCARBUROS — BOLIVIA<br/>"
             "<font size='11'>DECLARACIÓN JURADA DE SOLICITUD DE COMBUSTIBLE</font><br/>"
             f"<font size='9'>N° {str(solicitud.id_publico)[:8].upper()} | "
-            f"Fecha: {timezone.now().strftime('%d/%m/%Y')}</font>",
+            f"Fecha: {formatear_fecha(ahora_local())}</font>",
             titulo_style
         )]],
         colWidths=["100%"]
@@ -146,7 +148,7 @@ def generar_declaracion_jurada(solicitud) -> bytes:
         fila("Segundo apellido",  user.apellido_materno or "—"),
         fila("Tipo de documento", doc_id.get_tipo_documento_display() if doc_id else "—"),
         fila("N° de documento",   f"{doc_id.numero_documento} {doc_id.complemento_documento}".strip() if doc_id else "—"),
-        fila("Fecha de nacimiento", consumidor.fecha_nacimiento.strftime("%d/%m/%Y") if consumidor.fecha_nacimiento else "—"),
+        fila("Fecha de nacimiento", formatear_fecha(consumidor.fecha_nacimiento)),
     ])
 
     # ------------------------------------------------
@@ -216,7 +218,7 @@ def generar_declaracion_jurada(solicitud) -> bytes:
 
     lugar_fecha = (
         f"{consumidor.municipio.nombre if consumidor.municipio else '___________'}, "
-        f"{timezone.now().strftime('%d de %B de %Y')}"
+        f"{formatear_fecha_larga(ahora_local())}"
     )
 
     elementos.append(Paragraph(
@@ -251,7 +253,7 @@ def generar_declaracion_jurada(solicitud) -> bytes:
     pie = Table(
         [[Paragraph(
             "Documento generado por el Sistema de Gestión de Solicitudes de Combustible — ANH Bolivia | "
-            f"ID: {str(solicitud.id_publico)[:8].upper()} | {timezone.now().strftime('%d/%m/%Y %H:%M')}",
+            f"ID: {str(solicitud.id_publico)[:8].upper()} | {formatear_fecha_hora(ahora_local())}",
             ParagraphStyle("pie", fontSize=7, textColor=colors.grey,
                            alignment=TA_CENTER, fontName="Helvetica")
         )]],

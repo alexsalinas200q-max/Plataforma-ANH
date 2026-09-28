@@ -6,6 +6,8 @@ from datetime import timedelta
 from django.utils import timezone
 from django.db.models import Sum, Count, Q
 
+from core.fechas import ahora_local, formatear_fecha, formatear_fecha_hora
+
 
 # ------------------------------------------------
 # HELPERS — OBTENER CONSUMIDORES SEGÚN FILTRO
@@ -92,8 +94,8 @@ def _get_datos_consumidor(perfil, dias: int = 30):
         "solicitudes": [
             {
                 "id_publico":    str(s.id_publico)[:8].upper(),
-                "fecha":         s.fecha_creacion.strftime("%d/%m/%Y"),
-                "fecha_despacho": s.fecha_despacho.strftime("%d/%m/%Y") if s.fecha_despacho else "—",
+                "fecha":         formatear_fecha(s.fecha_creacion),
+                "fecha_despacho": formatear_fecha(s.fecha_despacho),
                 "litros_sol":    s.litros_solicitados,
                 "litros_des":    s.litros_despachados or 0,
                 "combustible":   s.get_tipo_combustible_display(),
@@ -136,7 +138,7 @@ def generar_reporte_excel(filtro: str, dias: int = 30) -> bytes:
 
     # Título
     ws.merge_cells("A1:K1")
-    ws["A1"] = f"REPORTE ANH — {filtro.replace('_', ' ')} — {timezone.now().strftime('%d/%m/%Y %H:%M')}"
+    ws["A1"] = f"REPORTE ANH — {filtro.replace('_', ' ')} — {formatear_fecha_hora(ahora_local())}"
     ws["A1"].font      = Font(bold=True, size=14, color="FFFFFF")
     ws["A1"].fill      = header_fill
     ws["A1"].alignment = center
@@ -265,7 +267,7 @@ def generar_reporte_pdf(filtro: str, dias: int = 30) -> bytes:
         [[Paragraph(
             f"AGENCIA NACIONAL DE HIDROCARBUROS — BOLIVIA<br/>"
             f"Reporte de Consumidores: {filtro.replace('_', ' ')}<br/>"
-            f"Generado: {timezone.now().strftime('%d/%m/%Y %H:%M')} | Período: {dias} días",
+            f"Generado: {formatear_fecha_hora(ahora_local())} | Período: {dias} días",
             titulo_style
         )]],
         colWidths=["100%"]

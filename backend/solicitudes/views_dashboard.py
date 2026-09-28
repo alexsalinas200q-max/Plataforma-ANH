@@ -8,6 +8,9 @@ from django.db.models import Sum, Count, Q
 from django.utils import timezone
 from datetime import timedelta
 
+from core.fechas import (
+    formatear_dia_mes, formatear_fecha_hora, inicio_dia_local,
+)
 from users.permissions import IsAdminOrANH
 from .models import Solicitud
 
@@ -28,10 +31,14 @@ class DashboardANHView(APIView):
         from .services.expirar_solicitudes import expirar_solicitudes_vencidas_seguro
         expirar_solicitudes_vencidas_seguro()
 
+        # "Hoy" y "mes" arrancan en la medianoche LOCAL. Con
+        # timezone.now().replace(hour=0) arrancaban en la medianoche
+        # UTC, que en La Paz son las 20:00 del día anterior.
         ahora         = timezone.now()
-        inicio_mes    = ahora.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        hoy           = timezone.localdate()
+        inicio_mes    = inicio_dia_local(hoy.replace(day=1))
         inicio_semana = ahora - timedelta(days=7)
-        inicio_hoy    = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
+        inicio_hoy    = inicio_dia_local(hoy)
 
         # ------------------------------------------------
         # SOLICITUDES POR ESTADO
@@ -138,23 +145,25 @@ class DashboardANHView(APIView):
 
         tendencia = []
         for i in range(6, -1, -1):
-            dia       = ahora - timedelta(days=i)
-            inicio_dia = dia.replace(hour=0, minute=0, second=0, microsecond=0)
-            fin_dia    = dia.replace(hour=23, minute=59, second=59)
+            dia        = hoy - timedelta(days=i)
+            inicio_dia = inicio_dia_local(dia)
+            # __lt contra la medianoche siguiente: sin el hueco del
+            # último segundo que dejaba el antiguo 23:59:59.
+            fin_dia    = inicio_dia_local(dia + timedelta(days=1))
 
             solicitudes_dia = Solicitud.objects.filter(
                 fecha_creacion__gte=inicio_dia,
-                fecha_creacion__lte=fin_dia
+                fecha_creacion__lt=fin_dia
             ).count()
 
             despachos_dia = Solicitud.objects.filter(
                 estado="DESPACHADA",
                 fecha_despacho__gte=inicio_dia,
-                fecha_despacho__lte=fin_dia
+                fecha_despacho__lt=fin_dia
             ).count()
 
             tendencia.append({
-                "fecha":       dia.strftime("%d/%m"),
+                "fecha":       formatear_dia_mes(dia),
                 "solicitudes": solicitudes_dia,
                 "despachos":   despachos_dia,
             })
@@ -165,7 +174,7 @@ class DashboardANHView(APIView):
 
         return Response({
 
-            "generado_en": ahora.strftime("%d/%m/%Y %H:%M"),
+            "generado_en": formatear_fecha_hora(ahora),
 
             "solicitudes": {
                 "por_estado": {

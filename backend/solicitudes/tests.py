@@ -397,3 +397,132 @@ class SolicitudCreateAPITests(TestCase):
             reverse("solicitud-list"), self._payload(litros=50), format="json",
         )
         self.assertEqual(response.status_code, 201, response.data)
+
+
+# ------------------------------------------------
+# LOTE A — FECHAS EN HORA LOCAL (America/La_Paz, UTC-4)
+# ------------------------------------------------
+
+def _utc(*args):
+    from datetime import timezone as dt_timezone
+    return datetime(*args, tzinfo=dt_timezone.utc)
+
+
+def _crear_con_fecha(consumidor, fecha_creacion):
+    # CANCELADA: no choca con la constraint de "una activa por consumidor".
+    # fecha_creacion es auto_now_add, así que se pisa con update().
+    s = _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.CANCELADA)
+    Solicitud.objects.filter(pk=s.pk).update(fecha_creacion=fecha_creacion)
+    return s
+
+
+class DashboardHoraLocalTests(TestCase):
+
+    def setUp(self):
+        self.anh = User.objects.create_user(
+            email="anh_dash@test.com", nombres="ANH", apellido_paterno="Dash",
+            tipo_usuario=User.TipoUsuario.ANH, password="testpass123",
+        )
+        self.anh.estado_cuenta = User.EstadoCuenta.ACTIVO
+        self.anh.save(update_fields=["estado_cuenta"])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.anh)
+        self.consumidor = _crear_consumidor("cons_dash@test.com")
+
+    def _dashboard(self, ahora_utc):
+        with patch("django.utils.timezone.now", return_value=ahora_utc):
+            response = self.client.get(reverse("dashboard-anh"))
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    def test_solicitud_de_las_21_hora_local_cuenta_como_hoy(self):
+        # "Ahora": 21:30 del 10/09 en La Paz = 01:30 UTC del 11/09
+        _crear_con_fecha(self.consumidor, _utc(2026, 9, 11, 1, 0))   # 21:00 local del 10
+        _crear_con_fecha(self.consumidor, _utc(2026, 9, 10, 23, 0))  # 19:00 local del 10
+        _crear_con_fecha(self.consumidor, _utc(2026, 9, 10, 1, 0))   # 21:00 local del 09
+
+        data = self._dashboard(_utc(2026, 9, 11, 1, 30))
+
+        # Con la medianoche UTC, "hoy" arrancaba a las 20:00 del 10 y
+        # la de las 19:00 quedaba afuera.
+        self.assertEqual(data["solicitudes"]["hoy"]["nuevas"], 2)
+
+        tendencia = data["tendencia_7_dias"]
+        self.assertEqual(tendencia[-1]["fecha"], "10/09")
+        self.assertEqual(tendencia[-1]["solicitudes"], 2)
+        self.assertEqual(tendencia[-2]["fecha"], "09/09")
+        self.assertEqual(tendencia[-2]["solicitudes"], 1)
+        self.assertEqual(data["generado_en"], "10/09/2026 21:30")
+
+    def test_solicitud_de_anoche_no_cuenta_como_hoy_a_la_manana(self):
+        _crear_con_fecha(self.consumidor, _utc(2026, 9, 11, 1, 0))   # 21:00 local del 10
+
+        # 10:00 del 11/09 en La Paz = 14:00 UTC del 11/09
+        data = self._dashboard(_utc(2026, 9, 11, 14, 0))
+
+        self.assertEqual(data["solicitudes"]["hoy"]["nuevas"], 0)
+        self.assertEqual(data["tendencia_7_dias"][-2]["fecha"], "10/09")
+        self.assertEqual(data["tendencia_7_dias"][-2]["solicitudes"], 1)
+
+
+class EstadisticasMesEspanolTests(TestCase):
+
+    def test_evolucion_mensual_con_meses_en_espanol_y_hora_local(self):
+        anh = User.objects.create_user(
+            email="anh_est@test.com", nombres="ANH", apellido_paterno="Est",
+            tipo_usuario=User.TipoUsuario.ANH, password="testpass123",
+        )
+        anh.estado_cuenta = User.EstadoCuenta.ACTIVO
+        anh.save(update_fields=["estado_cuenta"])
+        client = APIClient()
+        client.force_authenticate(user=anh)
+
+        consumidor = _crear_consumidor("cons_est@test.com")
+        # 02:00 UTC del 1° de febrero = 22:00 local del 31 de enero
+        _crear_con_fecha(consumidor, _utc(2026, 2, 1, 2, 0))
+
+        with patch("django.utils.timezone.now", return_value=_utc(2026, 9, 10, 15, 0)):
+            response = client.get("/api/estadisticas/solicitudes/")
+
+        self.assertEqual(response.status_code, 200)
+        meses = [m["mes"] for m in response.data["por_mes"]]
+        self.assertEqual(meses, ["Ene 2026"])
+
+
+class DeclaracionJuradaFechaTests(TestCase):
+
+    def test_lugar_y_fecha_con_mes_en_espanol(self):
+        from reportlab import rl_config
+        from solicitudes.services.generar_declaracion_jurada import generar_declaracion_jurada
+
+        consumidor = _crear_consumidor("cons_dj@test.com")
+        solicitud  = _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.PENDIENTE)
+
+        # 02:00 UTC del 28/09 = 22:00 local del 27/09. Sin compresión de
+        # página el texto queda legible en los bytes del PDF.
+        ahora = timezone.localtime(_utc(2026, 9, 28, 2, 0))
+        with patch("solicitudes.services.generar_declaracion_jurada.ahora_local", return_value=ahora), \
+             patch.object(rl_config, "pageCompression", 0):
+            pdf = generar_declaracion_jurada(solicitud)
+
+        self.assertIn(b"27 de septiembre de 2026", pdf)
+        self.assertNotIn(b"September", pdf)
+
+
+class EmailAprobacionHoraLocalTests(TestCase):
+
+    def test_valida_hasta_en_hora_local(self):
+        from django.core import mail
+        from django.test import override_settings
+        from users.email_service import enviar_notificacion_solicitud_aprobada
+
+        consumidor = _crear_consumidor("cons_mail@test.com")
+        solicitud  = _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.APROBADA, litros_aprobados=50)
+        solicitud.estacion_servicio         = _crear_estacion()
+        solicitud.tipo_combustible_aprobado = Solicitud.TipoCombustible.GASOLINA
+        solicitud.fecha_expiracion          = _utc(2026, 9, 11, 1, 45)  # 21:45 local del 10
+
+        with override_settings(BREVO_API_KEY=""):
+            enviar_notificacion_solicitud_aprobada(solicitud)
+
+        self.assertIn("Válida hasta    : 10/09/2026 21:45", mail.outbox[0].body)

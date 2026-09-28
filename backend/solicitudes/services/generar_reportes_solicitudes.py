@@ -1,8 +1,9 @@
 # apps/solicitudes/services/generar_reportes_solicitudes.py
 
 import io
-from django.utils import timezone
 from django.db.models import Sum
+
+from core.fechas import ahora_local, formatear_fecha_hora
 
 
 # ------------------------------------------------
@@ -64,9 +65,9 @@ def _fila_solicitud(s):
         "estado_raw":       s.estado,
         "municipio":        s.municipio.nombre if s.municipio else "—",
         "estacion":         s.estacion_servicio.nombre if s.estacion_servicio else "—",
-        "fecha_creacion":   s.fecha_creacion.strftime("%d/%m/%Y %H:%M") if s.fecha_creacion else "—",
-        "fecha_aprobacion": s.fecha_aprobacion.strftime("%d/%m/%Y %H:%M") if s.fecha_aprobacion else "—",
-        "fecha_despacho":   s.fecha_despacho.strftime("%d/%m/%Y %H:%M") if s.fecha_despacho else "—",
+        "fecha_creacion":   formatear_fecha_hora(s.fecha_creacion),
+        "fecha_aprobacion": formatear_fecha_hora(s.fecha_aprobacion),
+        "fecha_despacho":   formatear_fecha_hora(s.fecha_despacho),
     }
 
 
@@ -129,7 +130,7 @@ def generar_excel_solicitudes(filtros: dict) -> bytes:
     ws["A1"] = (
         f"REPORTE DE SOLICITUDES ANH — "
         f"{_descripcion_filtros(filtros)} — "
-        f"Generado: {timezone.now().strftime('%d/%m/%Y %H:%M')}"
+        f"Generado: {formatear_fecha_hora(ahora_local())}"
     )
     ws["A1"].font      = Font(bold=True, size=13, color="FFFFFF")
     ws["A1"].fill      = header_fill
@@ -274,7 +275,7 @@ def generar_pdf_solicitudes(filtros: dict) -> bytes:
             f"AGENCIA NACIONAL DE HIDROCARBUROS — BOLIVIA<br/>"
             f"Reporte de Solicitudes<br/>"
             f"<font size=9>{_descripcion_filtros(filtros)} | "
-            f"Generado: {timezone.now().strftime('%d/%m/%Y %H:%M')}</font>",
+            f"Generado: {formatear_fecha_hora(ahora_local())}</font>",
             titulo_style,
         )]],
         colWidths=["100%"],

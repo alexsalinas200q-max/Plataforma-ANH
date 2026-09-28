@@ -85,8 +85,9 @@ class RegistroConsumidorPorAdminSerializer(serializers.Serializer):
         return value
 
     def validate_fecha_nacimiento(self, value):
-        from datetime import date
-        hoy  = date.today()
+        # Fecha local (La Paz), no la del servidor (UTC en Railway).
+        from django.utils import timezone
+        hoy  = timezone.localdate()
         edad = (
             hoy.year - value.year
             - ((hoy.month, hoy.day) < (value.month, value.day))

@@ -8,6 +8,7 @@ from django.db.models import Count, Sum, Q
 from django.utils import timezone
 from datetime import timedelta
 
+from core.fechas import formatear_mes_anio
 from users.permissions import IsAdminOrANH
 from .models import Solicitud
 
@@ -132,7 +133,7 @@ class EstadisticasSolicitudesView(APIView):
 
         por_mes_fmt = [
             {
-                "mes":        m["mes"].strftime("%b %Y"),
+                "mes":        formatear_mes_anio(m["mes"]),
                 "total":      m["total"],
                 "aprobadas":  m["aprobadas"],
                 "despachadas": m["despachadas"],
@@ -216,7 +217,7 @@ class ReporteSolicitudesView(APIView):
             "estacion_id": estacion_id,
         }
 
-        fecha_str = timezone.now().strftime("%Y%m%d_%H%M")
+        fecha_str = timezone.localtime().strftime("%Y%m%d_%H%M")
         nombre    = f"reporte_solicitudes_{fecha_str}"
 
         from .services.generar_reportes_solicitudes import (

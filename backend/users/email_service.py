@@ -3,6 +3,8 @@
 import logging
 import requests
 
+from core.fechas import formatear_fecha_hora
+
 from django.core.mail import send_mail
 from django.conf import settings
 
@@ -230,7 +232,7 @@ Detalles de la aprobación:
   - Litros aprobados: {solicitud.litros_aprobados} L
   - Estación        : {solicitud.estacion_servicio.nombre}
   - Dirección       : {solicitud.estacion_servicio.direccion}, {solicitud.estacion_servicio.municipio}
-  - Válida hasta    : {solicitud.fecha_expiracion.strftime("%d/%m/%Y %H:%M")}
+  - Válida hasta    : {formatear_fecha_hora(solicitud.fecha_expiracion)}
 
 Por favor, preséntese en la estación asignada antes de la fecha de vencimiento
 con su documento de identidad.

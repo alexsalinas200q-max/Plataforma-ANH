@@ -10,7 +10,7 @@ import { Modal } from "../../components/ui/Modal";
 import { solicitudesService } from "../../services/solicitudes.service";
 import type { Solicitud } from "../../types/solicitud.types";
 import { COMBUSTIBLES } from "../../utils/constants";
-import { formatFecha, formatIdPublico } from "../../utils/format";
+import { formatFecha, formatIdPublico, fechaLocalISO } from "../../utils/format";
 import { useAuth } from "../../context/AuthContext";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -124,7 +124,7 @@ export default function SolicitudesESS() {
     if (silencioso) setRefrescando(true); else setLoading(true);
     setErrorPagina("");
     try {
-      const hoy = new Date().toISOString().slice(0, 10);
+      const hoy = fechaLocalISO();
 
       const [pendientes, despachadas] = await Promise.all([
         solicitudesService.getAll({ estado: "APROBADA", ordering: "fecha_expiracion" }),

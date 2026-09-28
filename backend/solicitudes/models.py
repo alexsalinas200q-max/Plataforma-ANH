@@ -416,10 +416,11 @@ class AuditoriaEstadoSolicitud(models.Model):
     nota       = models.TextField(blank=True, default="")
 
     def __str__(self):
+        from django.utils import timezone
         return (
             f"Solicitud {str(self.solicitud.id_publico)[:8].upper()} — "
             f"{self.estado_anterior} → {self.estado_nuevo} "
-            f"({self.fecha.strftime('%d/%m/%Y %H:%M')})"
+            f"({timezone.localtime(self.fecha).strftime('%d/%m/%Y %H:%M')})"
         )
 
     class Meta:

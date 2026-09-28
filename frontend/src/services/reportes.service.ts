@@ -1,6 +1,7 @@
 // src/services/reportes.service.ts
 
 import { api } from "../context/AuthContext";
+import { fechaLocalISO } from "../utils/format";
 
 export const reportesService = {
 
@@ -17,7 +18,7 @@ export const reportesService = {
     const url       = URL.createObjectURL(new Blob([res.data]));
     const a         = document.createElement("a");
     a.href          = url;
-    a.download      = `reporte_ANH_${filtro}_${new Date().toISOString().slice(0, 10)}.${extension}`;
+    a.download      = `reporte_ANH_${filtro}_${fechaLocalISO()}.${extension}`;
     a.click();
     URL.revokeObjectURL(url);
   },

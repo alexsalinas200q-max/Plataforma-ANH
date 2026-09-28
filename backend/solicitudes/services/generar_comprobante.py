@@ -3,6 +3,8 @@
 import io
 from django.utils import timezone
 
+from core.fechas import ahora_local, formatear_fecha_hora
+
 
 def generar_comprobante(solicitud) -> bytes:
     """
@@ -181,7 +183,7 @@ def generar_comprobante(solicitud) -> bytes:
     # ------------------------------------------------
 
     if solicitud.fecha_expiracion:
-        fecha_limite = solicitud.fecha_expiracion.strftime("%d/%m/%Y %H:%M")
+        fecha_limite = formatear_fecha_hora(solicitud.fecha_expiracion)
         dias_restantes = (solicitud.fecha_expiracion - timezone.now()).days
 
         fecha_tabla = Table(
@@ -231,7 +233,7 @@ def generar_comprobante(solicitud) -> bytes:
 
     pie = Table(
         [[Paragraph(
-            f"Generado: {timezone.now().strftime('%d/%m/%Y %H:%M')} | "
+            f"Generado: {formatear_fecha_hora(ahora_local())} | "
             f"Sistema ANH Bolivia | ID: {str(solicitud.id_publico)[:8].upper()}",
             ParagraphStyle("pie", fontSize=6.5, textColor=colors.grey,
                           alignment=TA_CENTER, fontName="Helvetica")
