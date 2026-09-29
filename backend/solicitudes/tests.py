@@ -481,12 +481,16 @@ class EstadisticasMesEspanolTests(TestCase):
         # 02:00 UTC del 1° de febrero = 22:00 local del 31 de enero
         _crear_con_fecha(consumidor, _utc(2026, 2, 1, 2, 0))
 
-        with patch("django.utils.timezone.now", return_value=_utc(2026, 9, 10, 15, 0)):
-            response = client.get("/api/estadisticas/solicitudes/")
+        # Rango > 31 días → evolución agrupada por mes
+        response = client.get("/api/estadisticas/solicitudes/", {
+            "fecha_desde": "2026-01-01", "fecha_hasta": "2026-02-28",
+        })
 
         self.assertEqual(response.status_code, 200)
-        meses = [m["mes"] for m in response.data["por_mes"]]
-        self.assertEqual(meses, ["Ene 2026"])
+        puntos = response.data["evolucion"]["puntos"]
+        self.assertEqual([p["etiqueta"] for p in puntos], ["Ene 2026", "Feb 2026"])
+        # Cae en enero (hora local), no en febrero (UTC)
+        self.assertEqual([p["creadas"] for p in puntos], [1, 0])
 
 
 class DeclaracionJuradaFechaTests(TestCase):
@@ -810,3 +814,168 @@ class SeedDemoCITests(TestCase):
         self.assertEqual(
             DocumentoIdentidad.objects.get(numero_documento=primer_ci).perfil, real,
         )
+
+
+# ------------------------------------------------
+# LOTE C1 — REPORTES: ESTADÍSTICAS Y REPORTE DE CONSUMIDORES
+# ------------------------------------------------
+
+def _anh_client(email):
+    anh = User.objects.create_user(
+        email=email, nombres="ANH", apellido_paterno="Rep",
+        tipo_usuario=User.TipoUsuario.ANH, password="testpass123",
+    )
+    anh.estado_cuenta = User.EstadoCuenta.ACTIVO
+    anh.save(update_fields=["estado_cuenta"])
+    client = APIClient()
+    client.force_authenticate(user=anh)
+    return client
+
+
+def _solicitud_en(consumidor, estado, creada, **campos):
+    """Solicitud con fecha_creacion fija (hora local) y campos extra."""
+    s = _crear_solicitud(consumidor, estado)
+    Solicitud.objects.filter(pk=s.pk).update(
+        fecha_creacion=timezone.make_aware(creada), **campos,
+    )
+    return s
+
+
+class EstadisticasReportesTests(TestCase):
+
+    URL = "/api/estadisticas/solicitudes/"
+
+    def setUp(self):
+        self.client = _anh_client("anh_est_c1@test.com")
+        c1 = _crear_consumidor("c1_est@test.com")
+        c2 = _crear_consumidor("c2_est@test.com")
+        aprob = timezone.make_aware(datetime(2026, 8, 5, 15, 0))
+        _solicitud_en(c1, "DESPACHADA", datetime(2026, 8, 5, 10, 0),
+                      fecha_aprobacion=aprob, litros_aprobados=40, litros_despachados=40)
+        _solicitud_en(c1, "EXPIRADA", datetime(2026, 8, 5, 11, 0),
+                      fecha_aprobacion=aprob, litros_aprobados=30)
+        _solicitud_en(c2, "RECHAZADA", datetime(2026, 8, 10, 9, 0))
+        _solicitud_en(c2, "CANCELADA", datetime(2026, 8, 10, 12, 0))
+
+    def _get(self, **params):
+        return self.client.get(self.URL, params)
+
+    def test_aprobadas_alguna_vez_incluye_despachadas_y_expiradas_y_tasas(self):
+        r = self._get(fecha_desde="2026-08-01", fecha_hasta="2026-08-31")
+        self.assertEqual(r.status_code, 200)
+        d = r.data
+        self.assertEqual(d["total"], 4)
+        self.assertEqual(d["aprobadas_alguna_vez"], 2)
+        self.assertEqual(d["rechazadas"], 1)
+        self.assertEqual(d["resueltas"], 3)
+        self.assertEqual(d["tasa_aprobacion"], 66.7)
+        self.assertEqual(d["tasa_rechazo"], 33.3)
+        self.assertEqual(d["litros_despachados"], 40)
+        self.assertEqual(d["periodo"]["texto"], "Solicitudes creadas entre 01/08/2026 y 31/08/2026")
+        self.assertEqual(
+            {c["tipo"]: c["litros"] for c in d["despachados_por_combustible"]},
+            {"GASOLINA": 40, "DIESEL": 0},
+        )
+
+    def test_tasas_sin_resueltas_son_none(self):
+        r = self._get(fecha_desde="2026-08-01", fecha_hasta="2026-08-31", estado="CANCELADA")
+        self.assertEqual(r.data["resueltas"], 0)
+        self.assertIsNone(r.data["tasa_aprobacion"])
+        self.assertIsNone(r.data["tasa_rechazo"])
+
+    def test_rango_invalido_400(self):
+        r = self._get(fecha_desde="2026-08-31", fecha_hasta="2026-08-01")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("posterior", str(r.data))
+
+    def test_rango_sin_datos_200_con_total_cero(self):
+        r = self._get(fecha_desde="2025-01-01", fecha_hasta="2025-01-31")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["total"], 0)
+
+    def test_agrupacion_por_dia_hasta_31_dias(self):
+        evol = self._get(fecha_desde="2026-08-01", fecha_hasta="2026-08-31").data["evolucion"]
+        self.assertEqual(evol["agrupacion"], "dia")
+        self.assertEqual(len(evol["puntos"]), 31)
+        dia5 = next(p for p in evol["puntos"] if p["etiqueta"] == "05/08")
+        self.assertEqual((dia5["creadas"], dia5["aprobadas"], dia5["despachadas"]), (2, 2, 1))
+
+    def test_agrupacion_por_mes_si_el_rango_es_mayor(self):
+        evol = self._get(fecha_desde="2026-06-01", fecha_hasta="2026-08-31").data["evolucion"]
+        self.assertEqual(evol["agrupacion"], "mes")
+        self.assertEqual([p["etiqueta"] for p in evol["puntos"]], ["Jun 2026", "Jul 2026", "Ago 2026"])
+        self.assertEqual(evol["puntos"][-1]["creadas"], 4)
+        self.assertEqual(evol["puntos"][-1]["aprobadas"], 2)
+
+    def test_reporte_de_solicitudes_rechaza_rango_invalido_y_vacio(self):
+        url = "/api/reportes/solicitudes/"
+        self.assertEqual(self.client.get(url, {"fecha_desde": "2026-08-31", "fecha_hasta": "2026-08-01"}).status_code, 400)
+        vacio = self.client.get(url, {"fecha_desde": "2025-01-01", "fecha_hasta": "2025-01-31"})
+        self.assertEqual(vacio.status_code, 400)
+        self.assertIn("No hay solicitudes", str(vacio.data))
+        ok = self.client.get(url, {"fecha_desde": "2026-08-01", "fecha_hasta": "2026-08-31"})
+        self.assertEqual(ok.status_code, 200)
+
+
+class ReporteConsumidoresMesTests(TestCase):
+
+    def setUp(self):
+        from solicitudes.services.validar_cupo import calcular_cupo_mensual
+        self.calcular = calcular_cupo_mensual
+        self.agotado = _crear_consumidor("agotado@test.com")
+        self.parcial = _crear_consumidor("parcial@test.com")
+        aprob = timezone.make_aware(datetime(2026, 8, 10, 12, 0))
+        desp  = timezone.make_aware(datetime(2026, 8, 11, 12, 0))
+        _solicitud_en(self.agotado, "DESPACHADA", datetime(2026, 8, 10, 8, 0),
+                      fecha_aprobacion=aprob, fecha_despacho=desp,
+                      litros_aprobados=120, litros_despachados=120)
+        _solicitud_en(self.parcial, "DESPACHADA", datetime(2026, 8, 12, 8, 0),
+                      fecha_aprobacion=aprob, fecha_despacho=desp,
+                      litros_aprobados=50, litros_despachados=50)
+
+    def test_cupo_agotado_por_mes_con_la_logica_de_validar_cupo(self):
+        from solicitudes.services.generar_reportes import get_consumidores
+
+        agosto = get_consumidores("CUPO_AGOTADO", date(2026, 8, 1))
+        self.assertEqual([p.pk for p in agosto], [self.agotado.pk])
+        self.assertEqual(get_consumidores("CUPO_AGOTADO", date(2026, 9, 1)), [])
+
+        # Mismo número que calcular_cupo_mensual para ese mes
+        for perfil in get_consumidores("TODOS", date(2026, 8, 1)):
+            self.assertEqual(perfil.cupo_usado_mes, self.calcular(perfil, mes=date(2026, 8, 20))["usado"])
+
+    def test_ordenado_por_litros_despachados(self):
+        from solicitudes.services.generar_reportes import fila_consumidor, get_consumidores
+        filas = [fila_consumidor(p) for p in get_consumidores("TODOS", date(2026, 8, 1))]
+        self.assertEqual([f["litros_despachados"] for f in filas], [120, 50])
+        self.assertEqual(filas[0]["cupo_texto"], "120/120 L")
+        self.assertEqual(filas[0]["solicitudes_mes"], 1)
+
+    def test_sin_mes_calcular_cupo_mantiene_el_mes_actual(self):
+        # La solicitud de agosto no cuenta para el mes actual (septiembre)
+        with patch("solicitudes.services.validar_cupo.timezone.localdate", return_value=date(2026, 9, 15)):
+            self.assertEqual(self.calcular(self.agotado)["usado"], 0)
+
+    def test_endpoint_400_sin_datos_y_filtros_viejos(self):
+        client = _anh_client("anh_cons_c1@test.com")
+        url = "/api/reportes/consumidores/"
+        self.assertEqual(client.get(url, {"filtro": "CUPO_AGOTADO", "mes": "2026-09"}).status_code, 400)
+        self.assertEqual(client.get(url, {"filtro": "BLOQUEADOS", "mes": "2026-08"}).status_code, 400)
+        self.assertEqual(client.get(url, {"filtro": "CUPO_AGOTADO", "mes": "2026-08"}).status_code, 200)
+
+    def test_reporte_sin_n_mas_1(self):
+        from solicitudes.services.generar_reportes import generar_reporte_excel, generar_reporte_pdf
+        mes = date(2026, 8, 1)
+        with self.assertNumQueries(2):
+            generar_reporte_excel("TODOS", mes)
+        with self.assertNumQueries(3):
+            generar_reporte_pdf("TODOS", mes)
+
+        # Más consumidores, mismas queries
+        for i in range(5):
+            c = _crear_consumidor(f"extra{i}@test.com")
+            _solicitud_en(c, "CANCELADA", datetime(2026, 8, 3, 8, 0))
+        with self.assertNumQueries(2):
+            generar_reporte_excel("TODOS", mes)
+        with self.assertNumQueries(3):
+            generar_reporte_pdf("TODOS", mes)

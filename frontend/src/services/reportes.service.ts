@@ -5,13 +5,14 @@ import { fechaLocalISO } from "../utils/format";
 
 export const reportesService = {
 
+  // mes: "AAAA-MM". filtro: TODOS | CUPO_AGOTADO.
   descargar: async (
     filtro: string,
     formato: "PDF" | "EXCEL",
-    dias: number = 30
+    mes: string,
   ): Promise<void> => {
     const res = await api.get("/api/reportes/consumidores/", {
-      params:       { filtro, formato, dias },
+      params:       { filtro, formato, mes },
       responseType: "blob",
     });
     const extension = formato === "PDF" ? "pdf" : "xlsx";

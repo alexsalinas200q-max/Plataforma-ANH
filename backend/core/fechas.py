@@ -13,7 +13,7 @@
 # setlocale: el contenedor de Railway puede no tener el locale "es"
 # instalado, y strftime caería al inglés sin avisar.
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
@@ -84,3 +84,19 @@ def inicio_dia_local(dia: date) -> datetime:
     medianoche sea la de UTC (20:00 del día anterior en La Paz).
     """
     return timezone.make_aware(datetime.combine(dia, time.min))
+
+
+def formatear_mes_anio_largo(valor) -> str:
+    """'Septiembre 2026' (títulos de reportes mensuales)."""
+    valor = a_local(valor)
+    return f"{MESES[valor.month - 1].capitalize()} {valor.year}"
+
+
+def rango_mes_local(mes: date) -> tuple[datetime, datetime]:
+    """
+    [inicio, fin) del mes calendario de `mes` en hora local, como
+    datetimes aware: filtrar con __gte inicio y __lt fin.
+    """
+    primero = mes.replace(day=1)
+    siguiente = (primero.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return inicio_dia_local(primero), inicio_dia_local(siguiente)

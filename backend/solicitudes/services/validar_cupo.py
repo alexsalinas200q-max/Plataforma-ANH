@@ -8,9 +8,9 @@
 # detectaba de forma reactiva en verificar_repetitividad.py (ver
 # comentario de deprecación en ese archivo).
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 CUPO_MENSUAL_LITROS = 120
@@ -38,20 +38,45 @@ def _primer_dia_mes_actual_aware():
     return timezone.make_aware(datetime.combine(primer_dia, time.min))
 
 
-def calcular_cupo_mensual(consumidor) -> dict:
+def filtro_cupo_del_mes(inicio, fin=None, prefijo: str = "") -> Q:
     """
-    Litros acumulados por el consumidor en el mes calendario actual,
-    sumando litros_aprobados de solicitudes APROBADA o DESPACHADA con
+    Condición de "solicitud que consume cupo" en [inicio, fin): la misma
+    que usa calcular_cupo_mensual. `prefijo` permite usarla desde otro
+    modelo (p. ej. "solicitudes__" desde ConsumidorPerfil en un annotate).
+    """
+    q = Q(**{
+        f"{prefijo}estado__in": ESTADOS_QUE_CONSUMEN_CUPO,
+        f"{prefijo}fecha_aprobacion__gte": inicio,
+    })
+    if fin is not None:
+        q &= Q(**{f"{prefijo}fecha_aprobacion__lt": fin})
+    return q
+
+
+def calcular_cupo_mensual(consumidor, mes: date | None = None) -> dict:
+    """
+    Litros acumulados por el consumidor en un mes calendario, sumando
+    litros_aprobados de solicitudes APROBADA o DESPACHADA con
     fecha_aprobacion dentro del mes.
+
+    Sin `mes`: el mes actual, con el mismo comportamiento de siempre
+    (solo cota inferior; nada se aprueba en el futuro). Con `mes`
+    (cualquier día del mes buscado): ese mes calendario en hora local,
+    usado por el reporte "Cupo mensual agotado".
     """
+    from core.fechas import rango_mes_local
     from solicitudes.models import Solicitud
 
-    inicio_mes = _primer_dia_mes_actual_aware()
+    if mes is None:
+        filtro   = filtro_cupo_del_mes(_primer_dia_mes_actual_aware())
+        etiqueta = timezone.localdate().strftime("%Y-%m")
+    else:
+        inicio, fin = rango_mes_local(mes)
+        filtro   = filtro_cupo_del_mes(inicio, fin)
+        etiqueta = mes.strftime("%Y-%m")
 
     usado = Solicitud.objects.filter(
-        consumidor=consumidor,
-        estado__in=ESTADOS_QUE_CONSUMEN_CUPO,
-        fecha_aprobacion__gte=inicio_mes,
+        filtro, consumidor=consumidor,
     ).aggregate(total=Sum("litros_aprobados"))["total"] or 0
 
     disponible = max(0, CUPO_MENSUAL_LITROS - usado)
@@ -60,7 +85,7 @@ def calcular_cupo_mensual(consumidor) -> dict:
         "total": CUPO_MENSUAL_LITROS,
         "usado": usado,
         "disponible": disponible,
-        "mes": timezone.localdate().strftime("%Y-%m"),
+        "mes": etiqueta,
     }
 
 
