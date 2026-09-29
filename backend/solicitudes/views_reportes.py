@@ -18,9 +18,12 @@ class ReporteConsumidoresView(APIView):
     Genera y descarga el reporte de consumidores de un mes, en PDF o Excel.
 
     Parámetros GET:
-      - filtro  : TODOS | CUPO_AGOTADO (default: TODOS)
-      - mes     : AAAA-MM (default: mes actual, hora local)
-      - formato : PDF | EXCEL (default: EXCEL)
+      - filtro          : TODOS | CUPO_AGOTADO | BLOQUEADOS | EN_REVISION
+                          (default: TODOS)
+      - mes             : AAAA-MM (default: mes actual, hora local)
+      - formato         : PDF | EXCEL (default: EXCEL)
+      - incluir_detalle : true | false (default: false). Agrega las
+                          solicitudes del mes de cada consumidor.
 
     400 si algún parámetro es inválido o si el filtro no tiene
     consumidores (no se generan archivos vacíos).
@@ -35,7 +38,8 @@ class ReporteConsumidoresView(APIView):
 
     def get(self, request):
         from .services.generar_reportes import (
-            FILTROS, generar_reporte_excel, generar_reporte_pdf, get_consumidores,
+            FILTROS, generar_reporte_excel, generar_reporte_pdf,
+            get_consumidores, nombre_archivo_consumidores,
         )
 
         filtro  = request.query_params.get("filtro",  "TODOS").upper()
@@ -64,26 +68,25 @@ class ReporteConsumidoresView(APIView):
         else:
             mes = timezone.localdate().replace(day=1)
 
+        incluir_detalle = request.query_params.get("incluir_detalle", "").lower() in ("1", "true", "si", "sí")
+
         if not get_consumidores(filtro, mes):
             return Response(
                 {"detail": "No hay consumidores para el tipo de reporte y el mes seleccionados."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        fecha_str = timezone.localtime().strftime("%Y%m%d_%H%M")
-        nombre    = f"reporte_consumidores_{filtro.lower()}_{mes:%Y-%m}_{fecha_str}"
-
         if formato == "PDF":
-            contenido      = generar_reporte_pdf(filtro, mes)
+            contenido      = generar_reporte_pdf(filtro, mes, incluir_detalle)
             content_type   = "application/pdf"
-            nombre_archivo = f"{nombre}.pdf"
+            nombre_archivo = nombre_archivo_consumidores(filtro, mes, "pdf")
         else:
-            contenido      = generar_reporte_excel(filtro, mes)
+            contenido      = generar_reporte_excel(filtro, mes, incluir_detalle)
             content_type   = (
                 "application/vnd.openxmlformats-officedocument"
                 ".spreadsheetml.sheet"
             )
-            nombre_archivo = f"{nombre}.xlsx"
+            nombre_archivo = nombre_archivo_consumidores(filtro, mes, "xlsx")
 
         response = HttpResponse(contenido, content_type=content_type)
         response["Content-Disposition"] = (

@@ -6,28 +6,42 @@
 #   - CUPO_AGOTADO → cupo usado >= 120 L en ese mes, con la misma regla
 #                    que validar_cupo (APROBADA + DESPACHADA por mes de
 #                    fecha_aprobacion).
+#   - BLOQUEADOS / EN_REVISION → según alerta_repetitividad (hoy solo se
+#                    cambia a mano desde DetalleConsumidor). Agregan la
+#                    columna "Motivo" (motivo_bloqueo).
 #
 # Por consumidor: solicitudes creadas en el mes (cualquier estado),
-# litros despachados en el mes (por fecha de despacho) y cupo usado.
-# Todo sale de un único queryset anotado + prefetch: la cantidad de
-# queries no crece con la cantidad de consumidores.
+# litros despachados de esas mismas solicitudes (creadas en el mes, la
+# misma base que el reporte de solicitudes, así los totales coinciden)
+# y cupo usado (regla de validar_cupo: aprobado + despachado en el mes).
+# Con incluir_detalle, además, sus solicitudes del mes. Todo sale de un
+# queryset anotado + prefetch: la cantidad de queries es fija (2 sin
+# detalle, 3 con detalle) sin importar cuántos consumidores haya.
 
-import io
 from datetime import date
 
 from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
-from core.fechas import (
-    ahora_local, formatear_fecha, formatear_fecha_hora,
-    formatear_mes_anio_largo, rango_mes_local,
-)
+from core.fechas import formatear_fecha, formatear_mes_anio_largo, rango_mes_local
+
+from . import formato_reportes as fmt
 
 
 FILTROS = {
     "TODOS":        "Todos los consumidores",
     "CUPO_AGOTADO": "Cupo mensual agotado",
+    "BLOQUEADOS":   "Consumidores bloqueados",
+    "EN_REVISION":  "Consumidores en revisión",
 }
+
+# Filtros por alerta_repetitividad (muestran la columna "Motivo")
+FILTROS_ALERTA = {"BLOQUEADOS": "BLOQUEADO", "EN_REVISION": "EN_REVISION"}
+
+NOTA_DEFINICIONES = (
+    "Solicitudes y litros despachados: solicitudes creadas en el mes. "
+    "Cupo usado: aprobado + despachado en el mes, según la regla de 120 L."
+)
 
 
 # ------------------------------------------------
@@ -61,8 +75,8 @@ def get_consumidores(filtro: str, mes: date, con_solicitudes: bool = False):
             litros_despachados_mes=Coalesce(
                 Sum("solicitudes__litros_despachados",
                     filter=Q(solicitudes__estado=Solicitud.EstadoSolicitud.DESPACHADA,
-                             solicitudes__fecha_despacho__gte=inicio,
-                             solicitudes__fecha_despacho__lt=fin)),
+                             solicitudes__fecha_creacion__gte=inicio,
+                             solicitudes__fecha_creacion__lt=fin)),
                 cero,
             ),
             cupo_usado_mes=Coalesce(
@@ -76,6 +90,8 @@ def get_consumidores(filtro: str, mes: date, con_solicitudes: bool = False):
 
     if filtro == "CUPO_AGOTADO":
         qs = qs.filter(cupo_usado_mes__gte=CUPO_MENSUAL_LITROS)
+    elif filtro in FILTROS_ALERTA:
+        qs = qs.filter(alerta_repetitividad=FILTROS_ALERTA[filtro])
 
     if con_solicitudes:
         qs = qs.prefetch_related(Prefetch(
@@ -112,6 +128,7 @@ def fila_consumidor(perfil) -> dict:
         "cupo_usado":         perfil.cupo_usado_mes,
         "cupo_texto":         f"{perfil.cupo_usado_mes}/{CUPO_MENSUAL_LITROS} L",
         "estado_cuenta":      perfil.user.get_estado_cuenta_display(),
+        "motivo":             perfil.motivo_bloqueo or "—",
     }
 
 
@@ -119,160 +136,152 @@ def titulo_reporte(filtro: str, mes: date) -> str:
     return f"Reporte de consumidores — {FILTROS[filtro]} — {formatear_mes_anio_largo(mes)}"
 
 
-CABECERAS = [
-    "Nombre", "CI", "Municipio", "Solicitudes del mes",
-    "Litros despachados", "Cupo usado", "Estado de cuenta",
-]
+def nombre_archivo_consumidores(filtro: str, mes: date, extension: str) -> str:
+    sufijo = "" if filtro == "TODOS" else f"_{filtro.lower()}"
+    return f"reporte_consumidores_{mes:%Y-%m}{sufijo}.{extension}"
 
 
-def _valores(d: dict) -> list:
+def cabeceras(filtro: str) -> list[str]:
+    cab = [
+        "Nombre", "CI", "Municipio", "Solicitudes del mes",
+        "Litros despachados", "Cupo usado", "Estado de cuenta",
+    ]
+    return cab + ["Motivo"] if filtro in FILTROS_ALERTA else cab
+
+
+def _lineas_encabezado(filtro: str, mes: date) -> list[str]:
+    return [f"Mes: {formatear_mes_anio_largo(mes)}", f"Tipo de reporte: {FILTROS[filtro]}"]
+
+
+def _indicadores(consumidores: list) -> list[tuple[str, int]]:
+    from solicitudes.services.validar_cupo import CUPO_MENSUAL_LITROS
+    # Calculados sobre la lista ya cargada: sin queries extra.
     return [
-        d["nombre"], d["ci"], d["municipio"], d["solicitudes_mes"],
-        d["litros_despachados"], d["cupo_texto"], d["estado_cuenta"],
+        ("Consumidores en el reporte", len(consumidores)),
+        ("Solicitudes del mes",        sum(p.solicitudes_mes for p in consumidores)),
+        ("Litros despachados",         sum(p.litros_despachados_mes for p in consumidores)),
+        ("Con cupo mensual agotado",   sum(1 for p in consumidores if p.cupo_usado_mes >= CUPO_MENSUAL_LITROS)),
     ]
 
 
-# ------------------------------------------------
-# EXCEL
-# ------------------------------------------------
-
-def generar_reporte_excel(filtro: str, mes: date) -> bytes:
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.utils import get_column_letter
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Reporte Consumidores"
-
-    header_fill    = PatternFill("solid", fgColor="1a3a5c")
-    subheader_fill = PatternFill("solid", fgColor="2d6a9f")
-    thin = Side(style="thin")
-    borde = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    ws.merge_cells(f"A1:{get_column_letter(len(CABECERAS))}1")
-    ws["A1"] = f"{titulo_reporte(filtro, mes)} — Generado: {formatear_fecha_hora(ahora_local())}"
-    ws["A1"].font      = Font(bold=True, size=13, color="FFFFFF")
-    ws["A1"].fill      = header_fill
-    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
-
-    for col, cab in enumerate(CABECERAS, 1):
-        c = ws.cell(row=2, column=col, value=cab)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = subheader_fill
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = borde
-
-    for fila, perfil in enumerate(get_consumidores(filtro, mes), 3):
-        for col, valor in enumerate(_valores(fila_consumidor(perfil)), 1):
-            c = ws.cell(row=fila, column=col, value=valor)
-            c.border = borde
-
-    for i, ancho in enumerate([30, 18, 18, 12, 14, 12, 16], 1):
-        ws.column_dimensions[get_column_letter(i)].width = ancho
-
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    return buffer.getvalue()
+CAB_DETALLE = ["Código", "Fecha", "Combustible", "Litros sol.", "Litros desp.", "Estado", "Estación"]
 
 
 # ------------------------------------------------
 # PDF
 # ------------------------------------------------
 
-def generar_reporte_pdf(filtro: str, mes: date) -> bytes:
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import ParagraphStyle
+def generar_reporte_pdf(filtro: str, mes: date, incluir_detalle: bool = False) -> bytes:
     from reportlab.lib.units import cm
-    from reportlab.platypus import (
-        HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
-    )
+    from reportlab.platypus import KeepTogether, Spacer
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer, pagesize=landscape(A4),
-        rightMargin=1.5 * cm, leftMargin=1.5 * cm,
-        topMargin=1.5 * cm, bottomMargin=1.5 * cm,
-    )
+    consumidores = get_consumidores(filtro, mes, con_solicitudes=incluir_detalle)
+    con_motivo   = filtro in FILTROS_ALERTA
 
-    azul, azul2 = colors.HexColor("#1a3a5c"), colors.HexColor("#2d6a9f")
-    gris, blanco = colors.HexColor("#f2f2f2"), colors.white
-
-    titulo_style = ParagraphStyle("titulo", fontSize=14, textColor=blanco,
-                                  alignment=TA_CENTER, fontName="Helvetica-Bold")
-    subtitulo_style = ParagraphStyle("subtitulo", fontSize=11, textColor=azul,
-                                     alignment=TA_CENTER, fontName="Helvetica-Bold", spaceAfter=6)
-    bold_style = ParagraphStyle("bold", fontSize=9, fontName="Helvetica-Bold", textColor=azul)
-
-    elementos = []
-
-    encabezado = Table([[Paragraph(
-        "AGENCIA NACIONAL DE HIDROCARBUROS — BOLIVIA<br/>"
-        f"{titulo_reporte(filtro, mes)}<br/>"
-        f"<font size=9>Generado: {formatear_fecha_hora(ahora_local())}</font>",
-        titulo_style,
-    )]], colWidths=["100%"])
-    encabezado.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), azul),
-        ("TOPPADDING", (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    elementos += [encabezado, Spacer(1, 0.4 * cm)]
-
-    consumidores = get_consumidores(filtro, mes, con_solicitudes=True)
-
-    elementos.append(Paragraph("RESUMEN DE CONSUMIDORES", subtitulo_style))
-    filas = [CABECERAS] + [
-        [str(v) for v in _valores(fila_consumidor(p))] for p in consumidores
+    indicadores = [
+        (label, f"{v:,} L".replace(",", ".") if label == "Litros despachados" else str(v))
+        for label, v in _indicadores(consumidores)
     ]
-    tabla = Table(filas, repeatRows=1)
-    tabla.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), azul2),
-        ("TEXTCOLOR", (0, 0), (-1, 0), blanco),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [blanco, gris]),
-        ("ALIGN", (3, 1), (5, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BOX", (0, 0), (-1, -1), 1, azul),
-    ]))
-    elementos += [tabla, Spacer(1, 0.5 * cm)]
 
-    # Detalle: solicitudes del mes de cada consumidor (desde el prefetch)
-    con_detalle = [p for p in consumidores if p.solicitudes_del_mes]
-    if con_detalle:
-        elementos += [
-            HRFlowable(width="100%", thickness=1, color=azul),
-            Spacer(1, 0.3 * cm),
-            Paragraph("DETALLE DE SOLICITUDES DEL MES", subtitulo_style),
-        ]
-    for perfil in con_detalle:
-        d = fila_consumidor(perfil)
-        elementos.append(Paragraph(f"{d['nombre']} — {d['ci']}", bold_style))
-        filas_sol = [["N° Solicitud", "Fecha", "Estado", "Combustible", "Lit. Sol.", "Lit. Des.", "Estación"]]
-        for s in perfil.solicitudes_del_mes:
-            filas_sol.append([
-                str(s.id_publico)[:8].upper(),
-                formatear_fecha(s.fecha_creacion),
-                s.get_estado_display(),
-                s.get_tipo_combustible_display(),
-                f"{s.litros_solicitados} L",
-                f"{s.litros_despachados or 0} L",
-                s.estacion_servicio.nombre if s.estacion_servicio else "—",
-            ])
-        tabla_sol = Table(filas_sol, repeatRows=1)
-        tabla_sol.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), azul2),
-            ("TEXTCOLOR", (0, 0), (-1, 0), blanco),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [blanco, gris]),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
-        elementos += [tabla_sol, Spacer(1, 0.4 * cm)]
+    filas = []
+    for p in consumidores:
+        d = fila_consumidor(p)
+        fila = [d["nombre"], d["ci"], d["municipio"], d["solicitudes_mes"],
+                f"{d['litros_despachados']} L", d["cupo_texto"], d["estado_cuenta"]]
+        if con_motivo:
+            fila.append(d["motivo"])
+        filas.append(fila)
 
-    doc.build(elementos)
-    return buffer.getvalue()
+    # Anchos: suma = 26.7 cm (ancho útil de la hoja apaisada)
+    anchos = ([5.2, 2.9, 3.0, 2.3, 2.6, 2.3, 2.4, 6.0] if con_motivo
+              else [7.2, 3.4, 4.2, 2.8, 3.1, 2.8, 3.2])
+
+    elementos = [
+        fmt.recuadro_resumen(indicadores),
+        fmt.subtitulo("Consumidores"),
+        fmt.tabla(cabeceras(filtro), filas, anchos, numericas=frozenset({3, 4, 5})),
+        fmt.nota(NOTA_DEFINICIONES),
+    ]
+
+    if incluir_detalle:
+        con_solicitudes = [p for p in consumidores if p.solicitudes_del_mes]
+        if con_solicitudes:
+            elementos.append(fmt.subtitulo("Detalle de solicitudes por consumidor"))
+        for p in con_solicitudes:
+            d = fila_consumidor(p)
+            tabla_sol = fmt.tabla(
+                CAB_DETALLE,
+                [[
+                    str(s.id_publico)[:8].upper(),
+                    formatear_fecha(s.fecha_creacion),
+                    s.get_tipo_combustible_display(),
+                    f"{s.litros_solicitados} L",
+                    f"{s.litros_despachados} L" if s.litros_despachados is not None else "—",
+                    s.get_estado_display(),
+                    s.estacion_servicio.nombre if s.estacion_servicio else "—",
+                ] for s in p.solicitudes_del_mes],
+                anchos_cm=[2.6, 2.6, 2.8, 2.6, 2.6, 3.0, 10.5],
+                numericas=frozenset({3, 4}),
+            )
+            # Una subsección no se parte entre páginas si entra en una;
+            # si es más larga que una página, KeepTogether la deja fluir.
+            elementos.append(KeepTogether([
+                fmt.encabezado_bloque(f"{d['nombre']} · {d['ci']} · Cupo usado {d['cupo_texto']}"),
+                tabla_sol,
+                Spacer(1, 0.3 * cm),
+            ]))
+
+    return fmt.construir_pdf(titulo_reporte(filtro, mes), _lineas_encabezado(filtro, mes), elementos)
+
+
+# ------------------------------------------------
+# EXCEL
+# ------------------------------------------------
+
+def generar_reporte_excel(filtro: str, mes: date, incluir_detalle: bool = False) -> bytes:
+    consumidores = get_consumidores(filtro, mes, con_solicitudes=incluir_detalle)
+    con_motivo   = filtro in FILTROS_ALERTA
+
+    wb = fmt.nuevo_libro()
+    fmt.hoja_resumen(
+        wb, titulo_reporte(filtro, mes),
+        _lineas_encabezado(filtro, mes) + [NOTA_DEFINICIONES],
+        _indicadores(consumidores),
+    )
+
+    filas = []
+    for p in consumidores:
+        d = fila_consumidor(p)
+        fila = [d["nombre"], d["ci"], d["municipio"], d["solicitudes_mes"],
+                d["litros_despachados"], d["cupo_texto"], d["estado_cuenta"]]
+        if con_motivo:
+            fila.append(d["motivo"])
+        filas.append(fila)
+    fmt.hoja_tabla(
+        wb, "Consumidores", cabeceras(filtro), filas,
+        anchos=[32, 18, 18, 12, 14, 12, 16] + ([45] if con_motivo else []),
+        formatos={3: fmt.FMT_ENTERO, 4: fmt.FMT_ENTERO},
+    )
+
+    if incluir_detalle:
+        detalle = []
+        for p in consumidores:
+            d = fila_consumidor(p)
+            for s in p.solicitudes_del_mes:
+                detalle.append([
+                    d["nombre"], d["ci"],
+                    str(s.id_publico)[:8].upper(),
+                    s.fecha_creacion,
+                    s.get_tipo_combustible_display(),
+                    s.litros_solicitados,
+                    s.litros_despachados,
+                    s.get_estado_display(),
+                    s.estacion_servicio.nombre if s.estacion_servicio else None,
+                ])
+        fmt.hoja_tabla(
+            wb, "Detalle", ["Consumidor", "CI"] + CAB_DETALLE, detalle,
+            anchos=[30, 16, 12, 17, 12, 11, 12, 13, 28],
+            formatos={3: fmt.FMT_FECHA_HORA, 5: fmt.FMT_ENTERO, 6: fmt.FMT_ENTERO},
+        )
+
+    return fmt.libro_a_bytes(wb)

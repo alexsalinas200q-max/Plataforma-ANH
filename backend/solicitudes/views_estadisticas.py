@@ -2,19 +2,12 @@
 #
 # Módulo de Reportes, pestaña Solicitudes.
 #
-# Definiciones (usadas en pantalla y en los archivos):
-#   - Aprobada alguna vez = fecha_aprobacion no nula (incluye DESPACHADA
-#     y EXPIRADA, no solo las que siguen en estado APROBADA).
-#   - Resueltas = aprobadas alguna vez + RECHAZADAS.
-#   - Tasa de aprobación = aprobadas alguna vez / resueltas; tasa de
-#     rechazo = RECHAZADAS / resueltas. None si resueltas = 0.
-#   - El período filtra por FECHA DE CREACIÓN ("Solicitudes creadas
-#     entre X y Y"), en hora local. Por defecto, el mes actual.
-#   - La medida principal es litros despachados (subsidio entregado).
+# Definiciones (aprobadas alguna vez, resueltas, tasas, período por
+# fecha de creación): ver solicitudes/services/estadisticas.py.
 
 from datetime import date, datetime, timedelta
 
-from django.db.models import Count, Q, Sum, Value
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate, TruncMonth
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -22,64 +15,17 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.fechas import formatear_dia_mes, formatear_fecha, formatear_mes_anio
+from core.fechas import formatear_dia_mes, formatear_mes_anio
 from users.permissions import IsAdminOrANH
 from .models import Solicitud
+from .services.estadisticas import (
+    SIN_DATOS, calcular_indicadores, filtros_desde_params,
+    solicitudes_filtradas, texto_periodo,
+)
 
 
 # Rangos de hasta este largo se agrupan por día; más largos, por mes.
 MAX_DIAS_AGRUPACION_DIARIA = 31
-
-SIN_DATOS = "No hay solicitudes en el rango seleccionado."
-
-
-# ------------------------------------------------
-# PERÍODO Y FILTROS (compartido con ReporteSolicitudesView)
-# ------------------------------------------------
-
-def _parse_fecha(valor: str | None, nombre: str) -> date | None:
-    if not valor:
-        return None
-    try:
-        return date.fromisoformat(valor)
-    except ValueError:
-        raise ValidationError({"detail": f"Fecha '{nombre}' inválida. Usa el formato AAAA-MM-DD."})
-
-
-def resolver_periodo(params) -> tuple[date, date]:
-    """
-    (desde, hasta) del query string; por defecto el mes actual en hora
-    local. 400 si desde > hasta.
-    """
-    hoy   = timezone.localdate()
-    desde = _parse_fecha(params.get("fecha_desde"), "desde") or hoy.replace(day=1)
-    hasta = _parse_fecha(params.get("fecha_hasta"), "hasta") or hoy
-    if desde > hasta:
-        raise ValidationError({"detail": "La fecha 'desde' no puede ser posterior a la fecha 'hasta'."})
-    return desde, hasta
-
-
-def texto_periodo(desde: date, hasta: date) -> str:
-    return f"Solicitudes creadas entre {formatear_fecha(desde)} y {formatear_fecha(hasta)}"
-
-
-def solicitudes_filtradas(params, desde: date, hasta: date):
-    qs = Solicitud.objects.filter(
-        fecha_creacion__date__gte=desde,
-        fecha_creacion__date__lte=hasta,
-    )
-    if params.get("estado"):
-        qs = qs.filter(estado=params["estado"])
-    if params.get("combustible"):
-        qs = qs.filter(tipo_combustible=params["combustible"])
-    if params.get("estacion"):
-        qs = qs.filter(estacion_servicio_id=params["estacion"])
-    return qs
-
-
-def _tasa(parte: int, resueltas: int):
-    return round(parte * 100 / resueltas, 1) if resueltas else None
-
 
 # ------------------------------------------------
 # EVOLUCIÓN (por día o por mes, según el largo del rango)
@@ -158,22 +104,13 @@ class EstadisticasSolicitudesView(APIView):
         from .services.expirar_solicitudes import expirar_solicitudes_vencidas_seguro
         expirar_solicitudes_vencidas_seguro()
 
-        desde, hasta = resolver_periodo(request.query_params)
-        qs = solicitudes_filtradas(request.query_params, desde, hasta)
+        filtros = filtros_desde_params(request.query_params)
+        desde, hasta = filtros["desde"], filtros["hasta"]
+        qs = solicitudes_filtradas(filtros)
 
         E = Solicitud.EstadoSolicitud
         despachadas = qs.filter(estado=E.DESPACHADA)
-        cero = Value(0)
-
-        resumen = qs.aggregate(
-            total=Count("id"),
-            aprobadas=Count("id", filter=Q(fecha_aprobacion__isnull=False)),
-            rechazadas=Count("id", filter=Q(estado=E.RECHAZADA)),
-            litros_despachados=Coalesce(
-                Sum("litros_despachados", filter=Q(estado=E.DESPACHADA)), cero,
-            ),
-        )
-        resueltas = resumen["aprobadas"] + resumen["rechazadas"]
+        indicadores = calcular_indicadores(qs)
 
         por_estado = list(
             qs.values("estado").annotate(total=Count("id")).order_by("-total")
@@ -219,13 +156,7 @@ class EstadisticasSolicitudesView(APIView):
                 "hasta": hasta.isoformat(),
                 "texto": texto_periodo(desde, hasta),
             },
-            "total":                resumen["total"],
-            "litros_despachados":   resumen["litros_despachados"],
-            "aprobadas_alguna_vez": resumen["aprobadas"],
-            "rechazadas":           resumen["rechazadas"],
-            "resueltas":            resueltas,
-            "tasa_aprobacion":      _tasa(resumen["aprobadas"], resueltas),
-            "tasa_rechazo":         _tasa(resumen["rechazadas"], resueltas),
+            **indicadores,
             "por_estado":           por_estado,
             "evolucion":            _evolucion(qs, desde, hasta),
             "despachados_por_combustible": despachados_por_combustible,
@@ -264,40 +195,29 @@ class ReporteSolicitudesView(APIView):
 
         from django.http import HttpResponse
 
-        params  = request.query_params
-        formato = params.get("formato", "EXCEL").upper()
+        formato = request.query_params.get("formato", "EXCEL").upper()
 
-        desde, hasta = resolver_periodo(params)
-        if not solicitudes_filtradas(params, desde, hasta).exists():
+        filtros = filtros_desde_params(request.query_params)
+        if not solicitudes_filtradas(filtros).exists():
             raise ValidationError({"detail": SIN_DATOS})
-
-        filtros = {
-            "fecha_desde": desde.isoformat(),
-            "fecha_hasta": hasta.isoformat(),
-            "estado":      params.get("estado"),
-            "combustible": params.get("combustible"),
-            "estacion_id": params.get("estacion"),
-        }
-
-        fecha_str = timezone.localtime().strftime("%Y%m%d_%H%M")
-        nombre    = f"reporte_solicitudes_{fecha_str}"
 
         from .services.generar_reportes_solicitudes import (
             generar_excel_solicitudes,
             generar_pdf_solicitudes,
+            nombre_archivo_solicitudes,
         )
 
         if formato == "PDF":
             contenido    = generar_pdf_solicitudes(filtros)
             content_type = "application/pdf"
-            archivo      = f"{nombre}.pdf"
+            archivo      = nombre_archivo_solicitudes(filtros, "pdf")
         else:
             contenido    = generar_excel_solicitudes(filtros)
             content_type = (
                 "application/vnd.openxmlformats-officedocument"
                 ".spreadsheetml.sheet"
             )
-            archivo = f"{nombre}.xlsx"
+            archivo = nombre_archivo_solicitudes(filtros, "xlsx")
 
         response = HttpResponse(contenido, content_type=content_type)
         response["Content-Disposition"] = f'attachment; filename="{archivo}"'

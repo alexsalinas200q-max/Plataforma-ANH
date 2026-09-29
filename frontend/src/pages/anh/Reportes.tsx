@@ -5,7 +5,6 @@ import type { ReactNode } from "react";
 import Layout from "../../components/Layout";
 import { estacionesService } from "../../services/estaciones.service";
 import { reportesService } from "../../services/reportes.service";
-import { api } from "../../context/AuthContext";
 import { Card, CardHeader, CardBody } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
@@ -27,6 +26,8 @@ import {
 const FILTROS_CONSUMIDORES = [
   { value: "TODOS",        label: "Todos los consumidores" },
   { value: "CUPO_AGOTADO", label: "Cupo mensual agotado" },
+  { value: "BLOQUEADOS",   label: "Consumidores bloqueados" },
+  { value: "EN_REVISION",  label: "Consumidores en revisión" },
 ];
 
 const ESTADOS_OPTIONS = [
@@ -166,6 +167,7 @@ export default function ReportesANH() {
 
   const [filtroConsumidor, setFiltroConsumidor] = useState("TODOS");
   const [mesCons,          setMesCons]          = useState(mesActual);
+  const [incluirDetalle,   setIncluirDetalle]   = useState(false);
 
   useEffect(() => {
     estacionesService.getAll({ estado: "ACTIVA" }).then(data => {
@@ -187,8 +189,7 @@ export default function ReportesANH() {
   const cargarEstadisticas = useCallback(async () => {
     setLoadStats(true);
     try {
-      const res = await api.get("/api/estadisticas/solicitudes/", { params: filtrosSolicitudes() });
-      setStats(res.data);
+      setStats(await reportesService.getEstadisticas(filtrosSolicitudes()));
     } catch {
       setStats(null);
       flashSol("error", "No se pudieron cargar las estadísticas.");
@@ -207,18 +208,7 @@ export default function ReportesANH() {
   const descargarSolicitudes = async (destFormato: "PDF" | "EXCEL") => {
     setDescargandoSol(destFormato);
     try {
-      const res = await api.get("/api/reportes/solicitudes/", {
-        params: { ...filtrosSolicitudes(), formato: destFormato },
-        responseType: "blob",
-      });
-
-      const ext  = destFormato === "PDF" ? "pdf" : "xlsx";
-      const url  = URL.createObjectURL(new Blob([res.data]));
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = `reporte_solicitudes.${ext}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await reportesService.descargarSolicitudes(filtrosSolicitudes(), destFormato);
       flashSol("success", `Reporte ${destFormato} descargado correctamente.`);
     } catch (err) {
       flashSol("error", await mensajeDeError(err, "Ocurrió un error al generar el reporte."));
@@ -230,7 +220,7 @@ export default function ReportesANH() {
   const descargarConsumidores = async (destFormato: "PDF" | "EXCEL") => {
     setDescargandoCons(destFormato);
     try {
-      await reportesService.descargar(filtroConsumidor, destFormato, mesCons);
+      await reportesService.descargar(filtroConsumidor, destFormato, mesCons, incluirDetalle);
       flashCons("success", `Reporte de consumidores ${destFormato} descargado.`);
     } catch (err) {
       flashCons("error", await mensajeDeError(err, "Ocurrió un error al generar el reporte."));
@@ -536,6 +526,21 @@ export default function ReportesANH() {
                     className={inputCls}
                   />
                 </div>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={incluirDetalle}
+                    onChange={e => setIncluirDetalle(e.target.checked)}
+                    className="mt-0.5 accent-primary"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-foreground">Incluir detalle de solicitudes</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Agrega las solicitudes del mes de cada consumidor (en el Excel, en una hoja "Detalle").
+                    </span>
+                  </span>
+                </label>
               </CardBody>
             </Card>
 
@@ -543,6 +548,7 @@ export default function ReportesANH() {
               <h3 className="font-semibold mb-1">Resumen</h3>
               <p className="text-navbar-muted text-sm mb-4">
                 {FILTROS_CONSUMIDORES.find(f => f.value === filtroConsumidor)?.label} · {mesCons}
+                {incluirDetalle && " · con detalle"}
               </p>
               <div className="flex gap-3">
                 <Button

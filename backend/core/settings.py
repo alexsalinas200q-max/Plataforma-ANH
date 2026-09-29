@@ -242,6 +242,9 @@ SIMPLE_JWT = {
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS   = env("CORS_ALLOWED_ORIGINS")
+# El frontend (otro origen) lee el nombre del archivo descargado de este
+# header en los reportes; sin exponerlo, el navegador lo oculta.
+CORS_EXPOSE_HEADERS    = ["Content-Disposition"]
 CSRF_TRUSTED_ORIGINS   = env("CSRF_TRUSTED_ORIGINS")
 
 # ------------------------------------------------

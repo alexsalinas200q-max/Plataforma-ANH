@@ -956,10 +956,12 @@ class ReporteConsumidoresMesTests(TestCase):
         with patch("solicitudes.services.validar_cupo.timezone.localdate", return_value=date(2026, 9, 15)):
             self.assertEqual(self.calcular(self.agotado)["usado"], 0)
 
-    def test_endpoint_400_sin_datos_y_filtros_viejos(self):
+    def test_endpoint_400_sin_datos_y_filtro_invalido(self):
         client = _anh_client("anh_cons_c1@test.com")
         url = "/api/reportes/consumidores/"
         self.assertEqual(client.get(url, {"filtro": "CUPO_AGOTADO", "mes": "2026-09"}).status_code, 400)
+        self.assertEqual(client.get(url, {"filtro": "SUPERARON_LIMITE", "mes": "2026-08"}).status_code, 400)
+        # Sin consumidores bloqueados → 400 (no se generan archivos vacíos)
         self.assertEqual(client.get(url, {"filtro": "BLOQUEADOS", "mes": "2026-08"}).status_code, 400)
         self.assertEqual(client.get(url, {"filtro": "CUPO_AGOTADO", "mes": "2026-08"}).status_code, 200)
 
@@ -968,7 +970,7 @@ class ReporteConsumidoresMesTests(TestCase):
         mes = date(2026, 8, 1)
         with self.assertNumQueries(2):
             generar_reporte_excel("TODOS", mes)
-        with self.assertNumQueries(3):
+        with self.assertNumQueries(2):
             generar_reporte_pdf("TODOS", mes)
 
         # Más consumidores, mismas queries
@@ -977,5 +979,216 @@ class ReporteConsumidoresMesTests(TestCase):
             _solicitud_en(c, "CANCELADA", datetime(2026, 8, 3, 8, 0))
         with self.assertNumQueries(2):
             generar_reporte_excel("TODOS", mes)
-        with self.assertNumQueries(3):
+        with self.assertNumQueries(2):
             generar_reporte_pdf("TODOS", mes)
+
+
+# ------------------------------------------------
+# LOTE C2 — FORMATO DE ARCHIVOS DE REPORTES
+# ------------------------------------------------
+
+def _pdf_legible(generar, *args, **kwargs):
+    """PDF sin compresión de página, para buscar texto en los bytes."""
+    from reportlab import rl_config
+    with patch.object(rl_config, "pageCompression", 0):
+        return generar(*args, **kwargs)
+
+
+def _libro(contenido):
+    import io
+    from openpyxl import load_workbook
+    return load_workbook(io.BytesIO(contenido))
+
+
+class ReportesArchivosC2Tests(TestCase):
+
+    AGOSTO = date(2026, 8, 1)
+
+    def setUp(self):
+        _, _, mun = _crear_cadena_geografica()
+        self.estacion = _crear_estacion("EST-C2", municipio=mun)
+        aprob = timezone.make_aware(datetime(2026, 8, 10, 12, 0))
+        desp  = timezone.make_aware(datetime(2026, 8, 11, 12, 0))
+
+        self.a = _crear_consumidor("a_c2@test.com")
+        self.b = _crear_consumidor("b_c2@test.com")
+        _solicitud_en(self.a, "DESPACHADA", datetime(2026, 8, 10, 8, 0),
+                      estacion_servicio=self.estacion, tipo_combustible_aprobado="GASOLINA",
+                      fecha_aprobacion=aprob, fecha_despacho=desp,
+                      litros_aprobados=120, litros_despachados=120)
+        _solicitud_en(self.b, "DESPACHADA", datetime(2026, 8, 12, 8, 0),
+                      estacion_servicio=self.estacion, tipo_combustible="DIESEL",
+                      tipo_combustible_aprobado="DIESEL",
+                      fecha_aprobacion=aprob, fecha_despacho=desp,
+                      litros_aprobados=50, litros_despachados=50)
+        _solicitud_en(self.b, "RECHAZADA", datetime(2026, 8, 20, 8, 0))
+
+        self.bloqueado = _crear_consumidor("bloq_c2@test.com")
+        ConsumidorPerfil.objects.filter(pk=self.bloqueado.pk).update(
+            alerta_repetitividad="BLOQUEADO", motivo_bloqueo="Uso indebido del cupo.",
+        )
+        self.revision = _crear_consumidor("rev_c2@test.com")
+        ConsumidorPerfil.objects.filter(pk=self.revision.pk).update(alerta_repetitividad="EN_REVISION")
+
+        self.filtros = {"desde": date(2026, 8, 1), "hasta": date(2026, 8, 31),
+                        "estado": None, "combustible": None, "estacion": None}
+
+    # ---------------- consumidores
+
+    def test_filtros_por_alerta_con_columna_motivo(self):
+        from solicitudes.services.generar_reportes import cabeceras, fila_consumidor, get_consumidores
+
+        bloq = get_consumidores("BLOQUEADOS", self.AGOSTO)
+        self.assertEqual([p.pk for p in bloq], [self.bloqueado.pk])
+        self.assertEqual(fila_consumidor(bloq[0])["motivo"], "Uso indebido del cupo.")
+        self.assertEqual([p.pk for p in get_consumidores("EN_REVISION", self.AGOSTO)], [self.revision.pk])
+        self.assertIn("Motivo", cabeceras("BLOQUEADOS"))
+        self.assertNotIn("Motivo", cabeceras("TODOS"))
+
+        wb = _libro(__import__("solicitudes.services.generar_reportes", fromlist=["x"])
+                    .generar_reporte_excel("BLOQUEADOS", self.AGOSTO))
+        ws = wb["Consumidores"]
+        self.assertEqual(ws.cell(row=1, column=8).value, "Motivo")
+        self.assertEqual(ws.cell(row=2, column=8).value, "Uso indebido del cupo.")
+
+    def test_excel_consumidores_con_y_sin_detalle(self):
+        from solicitudes.services.generar_reportes import generar_reporte_excel
+
+        sin = _libro(generar_reporte_excel("TODOS", self.AGOSTO))
+        self.assertEqual(sin.sheetnames, ["Resumen", "Consumidores"])
+
+        con = _libro(generar_reporte_excel("TODOS", self.AGOSTO, incluir_detalle=True))
+        self.assertEqual(con.sheetnames, ["Resumen", "Consumidores", "Detalle"])
+        det = con["Detalle"]
+        self.assertEqual(det.max_row - 1, 3)                       # 3 solicitudes de agosto
+        self.assertEqual(det.freeze_panes, "A2")
+        self.assertIsNotNone(det.auto_filter.ref)
+        self.assertIsInstance(det.cell(row=2, column=4).value, datetime)   # fecha real
+        self.assertIsInstance(det.cell(row=2, column=6).value, int)        # litros número
+
+    def test_pdf_consumidores_detalle_opcional_y_nota(self):
+        from solicitudes.services.generar_reportes import generar_reporte_pdf
+
+        sin = _pdf_legible(generar_reporte_pdf, "TODOS", self.AGOSTO)
+        con = _pdf_legible(generar_reporte_pdf, "TODOS", self.AGOSTO, incluir_detalle=True)
+        self.assertNotIn(b"Detalle de solicitudes por consumidor", sin)
+        self.assertIn(b"Detalle de solicitudes por consumidor", con)
+        self.assertIn(b"regla de 120 L", sin)
+        self.assertIn(b"gina 1 de", sin)   # "Página 1 de N" (la á va codificada)
+
+    def test_queries_fijas_con_detalle(self):
+        from solicitudes.services.generar_reportes import generar_reporte_excel, generar_reporte_pdf
+
+        with self.assertNumQueries(3):
+            generar_reporte_excel("TODOS", self.AGOSTO, incluir_detalle=True)
+        with self.assertNumQueries(3):
+            generar_reporte_pdf("TODOS", self.AGOSTO, incluir_detalle=True)
+
+        for i in range(4):
+            c = _crear_consumidor(f"extra_c2_{i}@test.com")
+            _solicitud_en(c, "CANCELADA", datetime(2026, 8, 5, 8, 0))
+        with self.assertNumQueries(3):
+            generar_reporte_excel("TODOS", self.AGOSTO, incluir_detalle=True)
+        with self.assertNumQueries(3):
+            generar_reporte_pdf("TODOS", self.AGOSTO, incluir_detalle=True)
+
+    # ---------------- solicitudes
+
+    def test_excel_solicitudes_hojas_y_resumen_por_estacion(self):
+        from solicitudes.services.generar_reportes_solicitudes import generar_excel_solicitudes
+
+        wb = _libro(generar_excel_solicitudes(self.filtros))
+        self.assertEqual(wb.sheetnames, ["Resumen", "Por estación", "Detalle"])
+
+        est = wb["Por estación"]
+        self.assertEqual([c.value for c in est[2]], ["Estación de prueba", 2, 120, 50, 170])
+
+        det = wb["Detalle"]
+        self.assertEqual(det.freeze_panes, "A2")
+        self.assertEqual(det.max_row - 1, 3)
+        self.assertIsInstance(det.cell(row=2, column=10).value, datetime)
+        self.assertIsInstance(det.cell(row=2, column=4).value, int)
+
+    def test_pdf_solicitudes_con_filtros_legibles_y_resumen_por_estacion(self):
+        from solicitudes.services.generar_reportes_solicitudes import generar_pdf_solicitudes
+
+        filtros = {**self.filtros, "estado": "DESPACHADA", "estacion": self.estacion.id}
+        pdf = _pdf_legible(generar_pdf_solicitudes, filtros)
+        self.assertIn(b"Estado: Despachada", pdf)
+        # reportlab escribe la "ó" como escape octal (\363) en el PDF
+        self.assertIn(b"Estaci\\363n: Estaci\\363n de prueba", pdf)
+        self.assertIn(b"Resumen por estaci", pdf)
+        self.assertNotIn(b"Estaci\\363n ID", pdf)
+
+    def test_archivos_con_un_solo_registro(self):
+        from solicitudes.services.generar_reportes import generar_reporte_excel, generar_reporte_pdf
+        from solicitudes.services.generar_reportes_solicitudes import (
+            generar_excel_solicitudes, generar_pdf_solicitudes,
+        )
+        uno = {**self.filtros, "estado": "RECHAZADA"}
+        self.assertTrue(generar_pdf_solicitudes(uno).startswith(b"%PDF"))
+        self.assertEqual(_libro(generar_excel_solicitudes(uno))["Detalle"].max_row, 2)
+        self.assertTrue(generar_reporte_pdf("BLOQUEADOS", self.AGOSTO, incluir_detalle=True).startswith(b"%PDF"))
+        self.assertEqual(_libro(generar_reporte_excel("BLOQUEADOS", self.AGOSTO))["Consumidores"].max_row, 2)
+
+    # ---------------- nombres de archivo
+
+    def test_nombre_de_archivo_con_el_periodo(self):
+        client = _anh_client("anh_c2@test.com")
+
+        r = client.get("/api/reportes/solicitudes/", {
+            "fecha_desde": "2026-08-01", "fecha_hasta": "2026-08-31", "formato": "PDF",
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('filename="reporte_solicitudes_2026-08-01_2026-08-31.pdf"', r["Content-Disposition"])
+
+        r = client.get("/api/reportes/consumidores/", {"mes": "2026-08", "formato": "EXCEL"})
+        self.assertIn('filename="reporte_consumidores_2026-08.xlsx"', r["Content-Disposition"])
+
+        r = client.get("/api/reportes/consumidores/", {
+            "mes": "2026-08", "formato": "EXCEL", "filtro": "CUPO_AGOTADO", "incluir_detalle": "true",
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('filename="reporte_consumidores_2026-08_cupo_agotado.xlsx"', r["Content-Disposition"])
+        self.assertIn("Detalle", _libro(r.content).sheetnames)
+
+
+class LitrosDespachadosCoincidenTests(TestCase):
+    """
+    Consumidores y solicitudes usan la misma base para los litros
+    despachados: solicitudes CREADAS en el mes y despachadas.
+    """
+
+    def test_total_de_litros_despachados_coincide_entre_reportes(self):
+        from solicitudes.services.estadisticas import calcular_indicadores, solicitudes_filtradas
+        from solicitudes.services.generar_reportes import get_consumidores
+
+        a = _crear_consumidor("coinc_a@test.com")
+        b = _crear_consumidor("coinc_b@test.com")
+        aware = timezone.make_aware
+
+        # Creada y despachada en agosto → cuenta
+        _solicitud_en(a, "DESPACHADA", datetime(2026, 8, 5, 9, 0),
+                      fecha_aprobacion=aware(datetime(2026, 8, 5, 12, 0)),
+                      fecha_despacho=aware(datetime(2026, 8, 6, 9, 0)),
+                      litros_aprobados=40, litros_despachados=40)
+        # Creada en agosto, despachada en septiembre → cuenta para agosto
+        _solicitud_en(b, "DESPACHADA", datetime(2026, 8, 30, 9, 0),
+                      fecha_aprobacion=aware(datetime(2026, 8, 30, 12, 0)),
+                      fecha_despacho=aware(datetime(2026, 9, 1, 9, 0)),
+                      litros_aprobados=25, litros_despachados=25)
+        # Creada en julio, despachada en agosto → NO cuenta para agosto
+        _solicitud_en(b, "DESPACHADA", datetime(2026, 7, 30, 9, 0),
+                      fecha_aprobacion=aware(datetime(2026, 7, 30, 12, 0)),
+                      fecha_despacho=aware(datetime(2026, 8, 2, 9, 0)),
+                      litros_aprobados=30, litros_despachados=30)
+
+        agosto = {"desde": date(2026, 8, 1), "hasta": date(2026, 8, 31),
+                  "estado": None, "combustible": None, "estacion": None}
+        total_solicitudes = calcular_indicadores(solicitudes_filtradas(agosto))["litros_despachados"]
+        total_consumidores = sum(
+            p.litros_despachados_mes for p in get_consumidores("TODOS", date(2026, 8, 1))
+        )
+
+        self.assertEqual(total_solicitudes, 65)
+        self.assertEqual(total_consumidores, total_solicitudes)

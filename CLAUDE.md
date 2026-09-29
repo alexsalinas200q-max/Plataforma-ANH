@@ -173,11 +173,6 @@ Next:
 ## Known issues
 
 ### Alta prioridad
-- **Reportes: rango de fechas inválido.** El filtro "desde/hasta"
-  en Reportes permite `desde > hasta` y deja descargar archivos
-  vacíos sin avisar. Falta validar el rango antes de pedir el
-  reporte (`services/reportes.service.ts`,
-  `solicitudes/views_reportes.py`).
 - **Manejo de errores de red silencioso.** Varias pantallas
   atrapan errores de fetch con `.catch(() => {})` y quedan con
   selects/listas vacías sin ningún mensaje al usuario. Reemplazar
@@ -192,9 +187,6 @@ Next:
   mensaje al usuario. No rompe nada (el backend valida el cupo
   igual), pero es un caso más del manejo de errores silencioso de
   arriba — resolver con el mismo patrón `flash()`.
-- **Presentación de datos en reportes PDF/Excel** necesita mejoras
-  (formato, layout) — sin detalle todavía de qué específicamente,
-  revisar con el usuario.
 - **Expiración de solicitudes solo perezosa.** La lógica
   (`solicitudes/services/expirar_solicitudes.py`) corre únicamente
   cuando alguien carga los listados, el dashboard o las estadísticas
@@ -208,6 +200,13 @@ Next:
 - **Ajustes de responsive en móvil** — pendientes, menores.
 
 ### Resueltos
+- **Reportes: rango de fechas inválido** — resuelto en el Lote C
+  (`a1daf67`): el frontend valida desde ≤ hasta, el backend responde
+  400 con rango inválido y no genera archivos sin datos.
+- **Presentación de datos en reportes PDF/Excel** — resuelto en el
+  Lote C2: PDF apaisado con encabezado, resumen, tablas con ancho fijo
+  y pie paginado; Excel con hojas Resumen/Por estación/Detalle,
+  encabezados fijos, autofiltro y fechas/litros con tipo real.
 - **Reset de contraseña mostraba la contraseña en texto plano** —
   resuelto en H1 (`3aa3bd0`): alta y reset por ADMIN/ANH envían un
   link por email; `MostrarPasswordModal.tsx` eliminado.
