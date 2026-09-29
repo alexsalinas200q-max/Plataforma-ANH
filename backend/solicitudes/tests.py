@@ -668,3 +668,145 @@ class RechazoAutomaticoEmailOnCommitTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
         self.solicitud.refresh_from_db()
         self.assertEqual(self.solicitud.estado, Solicitud.EstadoSolicitud.OBSERVADA)
+
+
+# ------------------------------------------------
+# LOTE DEMO — seed_demo
+# ------------------------------------------------
+
+class SeedDemoTests(TestCase):
+
+    def setUp(self):
+        from io import StringIO
+        self.out = StringIO()
+        _, _, mun1 = _crear_cadena_geografica()
+        self.estacion1 = _crear_estacion("EST-DEMO-A", municipio=mun1)
+        self.estacion2 = _crear_estacion("EST-DEMO-B", municipio=mun1)
+        self.real = _crear_consumidor("real@ejemplo.com")
+        anh = User.objects.create_user(
+            email="anh_seed@test.com", nombres="ANH", apellido_paterno="Seed",
+            tipo_usuario=User.TipoUsuario.ANH, password="testpass123",
+        )
+        anh.estado_cuenta = User.EstadoCuenta.ACTIVO
+        anh.save(update_fields=["estado_cuenta"])
+
+    def _seed(self, **kwargs):
+        from django.core.management import call_command
+        call_command("seed_demo", stdout=self.out, **kwargs)
+
+    def _demo(self):
+        return Solicitud.objects.filter(consumidor__user__email__endswith="@demo.anh.bo")
+
+    def test_crea_datos_consistentes_sin_emails(self):
+        from collections import defaultdict
+        from django.core import mail
+        from estaciones.models import EstacionServicio
+
+        estaciones_antes = EstacionServicio.objects.count()
+        self._seed(password="DemoClave123!")
+
+        usuarios = User.objects.filter(email__endswith="@demo.anh.bo")
+        self.assertEqual(usuarios.count(), 15)
+        self.assertTrue(all(u.check_password("DemoClave123!") for u in usuarios))
+        self.assertEqual(EstacionServicio.objects.count(), estaciones_antes)
+        self.assertEqual(len(mail.outbox), 0)
+
+        solicitudes = self._demo()
+        self.assertTrue(45 <= solicitudes.count() <= 55, solicitudes.count())
+        self.assertEqual(
+            set(solicitudes.values_list("estado", flat=True)),
+            set(Solicitud.EstadoSolicitud.values),
+        )
+
+        ahora = timezone.now()
+        for s in solicitudes:
+            self.assertLessEqual(s.fecha_creacion, ahora)
+            self.assertGreaterEqual(s.fecha_creacion, ahora - timezone.timedelta(days=92))
+            if s.estado == "APROBADA":
+                self.assertGreater(s.fecha_expiracion, ahora)
+            if s.estado == "OBSERVADA":
+                self.assertGreater(s.fecha_limite_respuesta, ahora)
+
+        # Una activa por consumidor y ≤ 120 L por mes (APROBADA + DESPACHADA)
+        activas  = defaultdict(int)
+        por_mes  = defaultdict(int)
+        for s in solicitudes:
+            if s.estado in ("PENDIENTE", "OBSERVADA", "APROBADA"):
+                activas[s.consumidor_id] += 1
+            if s.estado in ("APROBADA", "DESPACHADA"):
+                local = timezone.localtime(s.fecha_aprobacion)
+                por_mes[(s.consumidor_id, local.year, local.month)] += s.litros_aprobados
+        self.assertTrue(all(n == 1 for n in activas.values()))
+        self.assertTrue(all(litros <= 120 for litros in por_mes.values()), dict(por_mes))
+
+    def test_no_duplica_si_ya_hay_demo(self):
+        from django.core.management.base import CommandError
+        self._seed(password="DemoClave123!")
+        with self.assertRaises(CommandError):
+            self._seed(password="DemoClave123!")
+
+    def test_exige_password(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            self._seed()
+
+    def test_limpiar_borra_solo_la_demo(self):
+        from solicitudes.models import AuditoriaEstadoSolicitud
+        self._seed(password="DemoClave123!")
+        real_solicitud = _crear_solicitud(self.real, Solicitud.EstadoSolicitud.PENDIENTE)
+
+        self._seed(limpiar=True)
+
+        self.assertFalse(User.objects.filter(email__endswith="@demo.anh.bo").exists())
+        self.assertFalse(self._demo().exists())
+        self.assertFalse(AuditoriaEstadoSolicitud.objects.filter(
+            solicitud__consumidor__user__email__endswith="@demo.anh.bo").exists())
+        self.assertTrue(User.objects.filter(email="real@ejemplo.com").exists())
+        self.assertTrue(Solicitud.objects.filter(pk=real_solicitud.pk).exists())
+
+
+class EmailDemoOmitidoTests(TestCase):
+
+    def test_no_se_envia_a_direcciones_demo(self):
+        from django.core import mail
+        from django.test import override_settings
+        from users.email_service import _enviar_email
+
+        with override_settings(BREVO_API_KEY=""):
+            self.assertTrue(_enviar_email("Asunto", "Cuerpo", "juan.mamani.01@demo.anh.bo"))
+            self.assertEqual(len(mail.outbox), 0)
+            _enviar_email("Asunto", "Cuerpo", "real@ejemplo.com")
+            self.assertEqual(len(mail.outbox), 1)
+
+
+class SeedDemoCITests(TestCase):
+
+    def test_ci_numericos_de_7_a_8_digitos_sin_chocar_con_existentes(self):
+        import random
+        from io import StringIO
+        from django.core.management import call_command
+        from consumidores.models import DocumentoIdentidad
+
+        _, _, mun = _crear_cadena_geografica()
+        _crear_estacion("EST-CI", municipio=mun)
+
+        # Ocupa de antemano el primer CI que sortearía el seed (semilla
+        # por defecto 2026 → generador de CI con 2027).
+        primer_ci = str(random.Random(2027).randint(1_000_000, 99_999_999))
+        real = _crear_consumidor("real_ci@ejemplo.com")
+        DocumentoIdentidad.objects.create(
+            perfil=real, tipo_documento="CI", numero_documento=primer_ci,
+            anverso="", reverso="",
+        )
+
+        call_command("seed_demo", password="DemoClave123!", stdout=StringIO())
+
+        demo = DocumentoIdentidad.objects.filter(perfil__user__email__endswith="@demo.anh.bo")
+        numeros = list(demo.values_list("numero_documento", flat=True))
+        self.assertEqual(len(numeros), 15)
+        self.assertEqual(len(set(numeros)), 15)
+        self.assertTrue(all(n.isdigit() and 7 <= len(n) <= 8 for n in numeros), numeros)
+        self.assertNotIn(primer_ci, numeros)
+        self.assertEqual(
+            DocumentoIdentidad.objects.get(numero_documento=primer_ci).perfil, real,
+        )

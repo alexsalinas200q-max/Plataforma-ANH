@@ -10,6 +10,10 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+# Dominio de las cuentas de demostración (seed_demo). No es un dominio
+# real: a estas direcciones no se les envía nada.
+DOMINIO_DEMO = "@demo.anh.bo"
+
 
 # ------------------------------------------------
 # HELPER INTERNO
@@ -29,8 +33,14 @@ def _enviar_email(
       - Si no está configurada, hace fallback a Django send_mail
         (que en desarrollo escribe a consola).
 
-    Retorna True si el envío fue exitoso.
+    Retorna True si el envío fue exitoso. Las direcciones de demo
+    (DOMINIO_DEMO) se omiten sin enviar y cuentan como exitosas, para
+    que la UI no muestre "no se pudo enviar" durante una demostración.
     """
+    if destinatario.lower().endswith(DOMINIO_DEMO):
+        logger.info(f"Email a {destinatario} omitido (cuenta de demo) — asunto: {asunto}")
+        return True
+
     api_key = getattr(settings, "BREVO_API_KEY", "")
 
     # Sin API key → fallback a Django send_mail (desarrollo)
