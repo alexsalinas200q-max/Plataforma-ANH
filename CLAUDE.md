@@ -20,7 +20,7 @@ python manage.py makemigrations     # create migrations after model changes
 python manage.py test               # run all tests
 python manage.py test solicitudes   # run tests for one app
 python manage.py test solicitudes.tests.ClassName.test_method  # single test
-python manage.py expirar_solicitudes  # expira/rechaza solicitudes vencidas (ver "solicitudes/" abajo)
+python manage.py expirar_solicitudes  # expira/rechaza solicitudes vencidas a mano (ver "solicitudes/" abajo)
 python manage.py createsuperuser
 ```
 
@@ -47,7 +47,7 @@ Located in `backend/`, one directory per app, standard Django layout (`models.py
 - **`users/`** — custom `User` model (`AUTH_USER_MODEL = "users.User"`), authentication (login/refresh/logout, email verification via PIN, password recovery), and the RBAC permission base classes every other app builds on (`permissions.py`). Also owns `email_service.py` (Brevo HTTP API in prod, console backend in dev) and `authentication.py` (`CookieJWTAuthentication`).
 - **`consumidores/`** — consumer profile and identity documents.
 - **`estaciones/`** — gas stations (estaciones de servicio) CRUD and status.
-- **`solicitudes/`** — the core domain: fuel request lifecycle. Business logic lives in **`services/`** (one file per operation: `aprobar_solicitud.py`, `rechazar_solicitud.py`, `despachar_solicitud.py`, `observar_solicitud.py`, `generar_comprobante.py`, `generar_declaracion_jurada.py`, `verificar_repetitividad.py`, `registrar_auditoria.py`, report generators) rather than in `views.py` — views call into these services. Expiration of overdue requests (APROBADA → EXPIRADA, OBSERVADA past its 24 h → RECHAZADA) lives in `services/expirar_solicitudes.py` and runs two ways: the `expirar_solicitudes` management command, scheduled in production as a Railway Cron service every 10 minutes, and a lazy fallback (`expirar_solicitudes_vencidas_seguro()`, 5-minute per-worker guard) called from the list, dashboard and statistics views. There is no `cron.py`/`runcrons` (django-cron was never installed). Rejection emails are sent via `transaction.on_commit`, never inside the locked transaction. Also has `views_dashboard.py`, `views_estadisticas.py`, `views_reportes.py` as separate view modules beyond the default `views.py`, and `filters.py` for `django-filter` querysets.
+- **`solicitudes/`** — the core domain: fuel request lifecycle. Business logic lives in **`services/`** (one file per operation: `aprobar_solicitud.py`, `rechazar_solicitud.py`, `despachar_solicitud.py`, `observar_solicitud.py`, `generar_comprobante.py`, `generar_declaracion_jurada.py`, `verificar_repetitividad.py`, `registrar_auditoria.py`, report generators) rather than in `views.py` — views call into these services. Expiration of overdue requests (APROBADA → EXPIRADA, OBSERVADA past its 24 h → RECHAZADA) lives in `services/expirar_solicitudes.py`. **The mechanism in production is lazy expiration only**: `expirar_solicitudes_vencidas_seguro()` (5-minute per-worker guard) runs from the list, dashboard and statistics views, so nothing expires while nobody uses the system. The `expirar_solicitudes` management command runs the same logic on demand; there is **no scheduled job** (a Railway Cron service is not available on the current plan — see "Mejoras futuras"). There is no `cron.py`/`runcrons` (django-cron was never installed). Rejection emails are sent via `transaction.on_commit`, never inside the locked transaction. Also has `views_dashboard.py`, `views_estadisticas.py`, `views_reportes.py` as separate view modules beyond the default `views.py`, and `filters.py` for `django-filter` querysets.
 - **`configuracion/`** and **`catalogos/`** — app-wide settings and reference/lookup data (catálogos have `fixtures/`).
 
 Routing (`core/urls.py`) mounts apps under `/api/<app>/...` and documents the generated routes inline as comments above each `include()`. When adding endpoints, follow that same comment convention.
@@ -195,12 +195,14 @@ Next:
 - **Presentación de datos en reportes PDF/Excel** necesita mejoras
   (formato, layout) — sin detalle todavía de qué específicamente,
   revisar con el usuario.
-- **Expiración de solicitudes: falta verificar el Cron en
-  producción.** La lógica (`solicitudes/services/expirar_solicitudes.py`)
-  corre con el management command `expirar_solicitudes` (servicio Cron
-  de Railway cada 10 min) y, como respaldo, de forma perezosa desde los
-  listados. Falta confirmar end-to-end en Railway que el servicio Cron
-  corre y termina (logs "Nada para expirar…" / conteos).
+- **Expiración de solicitudes solo perezosa.** La lógica
+  (`solicitudes/services/expirar_solicitudes.py`) corre únicamente
+  cuando alguien carga los listados, el dashboard o las estadísticas
+  (guarda de 5 min por worker). Si nadie usa el sistema, no expira
+  nada ni salen los emails de rechazo automático; y un consumidor
+  puede quedar hasta 5 min bloqueado para crear una solicitud nueva
+  después de que venció la anterior. No hay Cron configurado: el plan
+  actual de Railway no lo permite (ver "Mejoras futuras").
 
 ### Baja prioridad
 - **Ajustes de responsive en móvil** — pendientes, menores.
@@ -214,6 +216,47 @@ Next:
 
 Known issues tracked here going forward — ask before assuming
 something is a bug vs. intentional if it's not on this list.
+
+## Mejoras futuras
+
+### Cron de expiración en Railway (no configurado)
+
+Pendiente hasta tener un plan de Railway que permita servicios Cron.
+Reemplazaría a la expiración perezosa como mecanismo principal (la
+perezosa queda de respaldo). El código ya está listo: solo es
+configuración. Pasos en el proyecto de producción (devoted-magic):
+
+1. **+ New → GitHub Repo →** el mismo repo del backend. Renombrar el
+   servicio (ej. `expirar-solicitudes`). Railway suele lanzar un primer
+   deploy con el `web:` del Procfile (gunicorn): configurar el paso 3
+   enseguida o cancelar ese deploy.
+2. **Settings → Source:** Root Directory igual al del servicio backend
+   (`backend`), branch `main`. Opcional: Watch Paths `backend/**`.
+3. **Settings → Deploy:** Custom Start Command
+   `python manage.py expirar_solicitudes`; Pre-deploy Command vacío (no
+   correr `migrate` desde acá); Cron Schedule `*/10 * * * *` (UTC, da
+   igual para un intervalo); Restart Policy *Never*; sin healthcheck.
+4. **Settings → Networking:** sin dominio público.
+5. **Variables** (referencias al servicio backend, ajustar el nombre):
+   ```
+   DJANGO_SECRET_KEY=${{backend.DJANGO_SECRET_KEY}}
+   DJANGO_DEBUG=False
+   DATABASE_URL=${{backend.DATABASE_URL}}
+   BREVO_API_KEY=${{backend.BREVO_API_KEY}}
+   BREVO_SENDER_EMAIL=${{backend.BREVO_SENDER_EMAIL}}
+   BREVO_SENDER_NAME=${{backend.BREVO_SENDER_NAME}}
+   ```
+   Obligatorias: `DJANGO_SECRET_KEY` y `DATABASE_URL` (o los cinco
+   `DB_*` si el backend usa esos). `DJANGO_DEBUG` explícita porque su
+   default es `True`. No hacen falta `DJANGO_ALLOWED_HOSTS`, `CORS_*`,
+   `CSRF_*` ni `FRONTEND_URL`.
+6. **Verificar** en los logs de cada ejecución: "Nada para expirar ni
+   rechazar por vencimiento." o los conteos, con salida en código 0.
+
+Notas: el repo solo tiene `backend/Procfile` (sin `railway.json`,
+`railway.toml` ni `nixpacks.toml`); su línea `release:` es convención
+de Heroku y Railway no la ejecuta — el `migrate` del backend viene de la
+configuración del panel.
 
 ## Deuda técnica
 

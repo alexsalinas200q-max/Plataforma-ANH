@@ -7,9 +7,10 @@
 # llama desde los listados/dashboard/estadísticas (ver solicitudes/
 # views.py, views_dashboard.py, views_estadisticas.py) para que las
 # solicitudes vencidas se corrijan antes de mostrarse, sin depender de
-# ningún proceso programado. En producción, además, un servicio Cron de
-# Railway corre el management command `expirar_solicitudes` cada 10
-# minutos; la ejecución perezosa queda como respaldo.
+# ningún proceso programado. Hoy es el único mecanismo en producción:
+# no hay Cron configurado (el plan actual de Railway no lo permite; los
+# pasos para agregarlo están en CLAUDE.md, "Mejoras futuras"). El
+# management command `expirar_solicitudes` corre la misma lógica a mano.
 #
 # Emails: se envían con transaction.on_commit, nunca dentro de la
 # transacción que tiene las filas bloqueadas (select_for_update). Así
