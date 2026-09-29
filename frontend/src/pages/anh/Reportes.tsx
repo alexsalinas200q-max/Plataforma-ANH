@@ -4,7 +4,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
 import Layout from "../../components/Layout";
 import { estacionesService } from "../../services/estaciones.service";
-import { reportesService } from "../../services/reportes.service";
+import { reportesService, mensajeDeErrorDescarga } from "../../services/reportes.service";
+import { consumidoresService } from "../../services/consumidores.service";
+import type { ConsumidorListItem } from "../../types/consumidor.types";
 import { Card, CardHeader, CardBody } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
@@ -16,7 +18,7 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, LabelList,
 } from "recharts";
 import {
-  BarChart3, FileText, FileSpreadsheet, Filter, CalendarRange,
+  BarChart3, FileText, FileSpreadsheet, Filter, CalendarRange, Search, User, X,
 } from "lucide-react";
 
 // ------------------------------------------------
@@ -72,19 +74,6 @@ const mesActual = () => fechaLocalISO().slice(0, 7);
 const formatLitros = (v: number) => `${v.toLocaleString("es-BO")} L`;
 const formatTasa = (v: number | null) => (v === null ? "—" : `${v.toLocaleString("es-BO")} %`);
 
-// Con responseType "blob", el cuerpo de un 400 también llega como Blob:
-// se lee para mostrar el mensaje del backend en vez de uno genérico.
-async function mensajeDeError(err: unknown, porDefecto: string): Promise<string> {
-  const data = (err as { response?: { data?: unknown } }).response?.data;
-  try {
-    if (data instanceof Blob) {
-      const json = JSON.parse(await data.text());
-      if (typeof json.detail === "string") return json.detail;
-    }
-  } catch { /* cuerpo no JSON: mensaje por defecto */ }
-  return porDefecto;
-}
-
 // ------------------------------------------------
 // COMPONENTES DE PRESENTACIÓN
 // ------------------------------------------------
@@ -106,6 +95,93 @@ function Grafico({ titulo, children }: { titulo: string; children: ReactNode }) 
       <CardHeader><h3 className="font-semibold text-foreground text-sm">{titulo}</h3></CardHeader>
       <CardBody>{children}</CardBody>
     </Card>
+  );
+}
+
+// Búsqueda de un consumidor por nombre o CI para el reporte individual.
+// Debounce de 300 ms; solo busca con 2 caracteres o más.
+const DEBOUNCE_MS = 300;
+
+interface BuscadorConsumidorProps {
+  seleccionado: { id: number; nombre: string } | null;
+  onSeleccionar: (c: { id: number; nombre: string }) => void;
+  onQuitar: () => void;
+  inputCls: string;
+}
+
+function BuscadorConsumidor({ seleccionado, onSeleccionar, onQuitar, inputCls }: BuscadorConsumidorProps) {
+  const [texto,      setTexto]      = useState("");
+  const [resultados, setResultados] = useState<{ para: string; items: ConsumidorListItem[] }>({ para: "", items: [] });
+  const [buscando,   setBuscando]   = useState(false);
+  const [error,      setError]      = useState("");
+
+  const consulta = texto.trim();
+
+  useEffect(() => {
+    if (consulta.length < 2) return;
+    const timer = setTimeout(async () => {
+      setBuscando(true);
+      setError("");
+      try {
+        const items = await consumidoresService.buscar(consulta);
+        setResultados({ para: consulta, items: items.slice(0, 8) });
+      } catch {
+        setError("No se pudo buscar consumidores.");
+      } finally {
+        setBuscando(false);
+      }
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [consulta]);
+
+  if (seleccionado) {
+    return (
+      <div className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-full bg-primary/10 text-primary">
+        <User className="w-3.5 h-3.5" />
+        {seleccionado.nombre}
+        <button type="button" onClick={onQuitar} className="hover:text-primary-hover" aria-label="Quitar consumidor">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  // Solo se muestran resultados de la consulta vigente (no de una anterior)
+  const visibles = consulta.length >= 2 && resultados.para === consulta ? resultados.items : [];
+
+  return (
+    <div className="relative">
+      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+      <input
+        value={texto}
+        onChange={e => setTexto(e.target.value)}
+        placeholder="Buscar por nombre o CI (opcional)"
+        className={`${inputCls} w-full pl-9`}
+      />
+      {consulta.length >= 2 && (
+        <div className="mt-1 border border-border rounded-xl bg-card divide-y divide-border overflow-hidden">
+          {buscando && visibles.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-muted-foreground">Buscando...</p>
+          ) : error ? (
+            <p className="px-3 py-2 text-xs text-state-danger-fg">{error}</p>
+          ) : visibles.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-muted-foreground">Sin resultados.</p>
+          ) : (
+            visibles.map(c => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => { onSeleccionar({ id: c.id, nombre: c.nombre_completo }); setTexto(""); }}
+                className="w-full text-left px-3 py-2 hover:bg-background transition-colors"
+              >
+                <p className="text-sm text-foreground">{c.nombre_completo}</p>
+                <p className="text-xs text-muted-foreground">{c.email} · {c.municipio_nombre ?? "—"}</p>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -168,6 +244,8 @@ export default function ReportesANH() {
   const [filtroConsumidor, setFiltroConsumidor] = useState("TODOS");
   const [mesCons,          setMesCons]          = useState(mesActual);
   const [incluirDetalle,   setIncluirDetalle]   = useState(false);
+  // Reporte de un solo consumidor: anula tipo y detalle (siempre con detalle)
+  const [consumidorSel,    setConsumidorSel]    = useState<{ id: number; nombre: string } | null>(null);
 
   useEffect(() => {
     estacionesService.getAll({ estado: "ACTIVA" }).then(data => {
@@ -211,7 +289,7 @@ export default function ReportesANH() {
       await reportesService.descargarSolicitudes(filtrosSolicitudes(), destFormato);
       flashSol("success", `Reporte ${destFormato} descargado correctamente.`);
     } catch (err) {
-      flashSol("error", await mensajeDeError(err, "Ocurrió un error al generar el reporte."));
+      flashSol("error", await mensajeDeErrorDescarga(err, "Ocurrió un error al generar el reporte."));
     } finally {
       setDescargandoSol(null);
     }
@@ -220,10 +298,10 @@ export default function ReportesANH() {
   const descargarConsumidores = async (destFormato: "PDF" | "EXCEL") => {
     setDescargandoCons(destFormato);
     try {
-      await reportesService.descargar(filtroConsumidor, destFormato, mesCons, incluirDetalle);
+      await reportesService.descargar(filtroConsumidor, destFormato, mesCons, incluirDetalle, consumidorSel?.id);
       flashCons("success", `Reporte de consumidores ${destFormato} descargado.`);
     } catch (err) {
-      flashCons("error", await mensajeDeError(err, "Ocurrió un error al generar el reporte."));
+      flashCons("error", await mensajeDeErrorDescarga(err, "Ocurrió un error al generar el reporte."));
     } finally {
       setDescargandoCons(null);
     }
@@ -500,6 +578,21 @@ export default function ReportesANH() {
               <CardHeader><h2 className="font-semibold text-foreground">Reporte de consumidores</h2></CardHeader>
               <CardBody className="space-y-5">
                 <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">Consumidor</label>
+                  <BuscadorConsumidor
+                    seleccionado={consumidorSel}
+                    onSeleccionar={setConsumidorSel}
+                    onQuitar={() => setConsumidorSel(null)}
+                    inputCls={inputCls}
+                  />
+                  {consumidorSel && (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Reporte individual: incluye siempre el detalle de sus solicitudes del mes.
+                    </p>
+                  )}
+                </div>
+
+                <div className={consumidorSel ? "opacity-50" : ""}>
                   <label className="block text-sm font-medium text-foreground mb-3">Tipo de reporte</label>
                   <div className="grid grid-cols-1 gap-2">
                     {FILTROS_CONSUMIDORES.map(f => (
@@ -507,6 +600,7 @@ export default function ReportesANH() {
                         filtroConsumidor === f.value ? "border-primary bg-primary/10" : "border-border hover:bg-background"
                       }`}>
                         <input type="radio" name="filtro_cons" value={f.value} checked={filtroConsumidor === f.value}
+                          disabled={!!consumidorSel}
                           onChange={() => setFiltroConsumidor(f.value)} className="text-primary accent-primary" />
                         <p className={`text-sm font-medium ${filtroConsumidor === f.value ? "text-primary" : "text-foreground"}`}>
                           {f.label}
@@ -527,10 +621,11 @@ export default function ReportesANH() {
                   />
                 </div>
 
-                <label className="flex items-start gap-3 cursor-pointer">
+                <label className={`flex items-start gap-3 ${consumidorSel ? "opacity-50" : "cursor-pointer"}`}>
                   <input
                     type="checkbox"
-                    checked={incluirDetalle}
+                    checked={consumidorSel ? true : incluirDetalle}
+                    disabled={!!consumidorSel}
                     onChange={e => setIncluirDetalle(e.target.checked)}
                     className="mt-0.5 accent-primary"
                   />
@@ -547,8 +642,12 @@ export default function ReportesANH() {
             <div className="bg-navbar rounded-2xl p-6 text-navbar-foreground">
               <h3 className="font-semibold mb-1">Resumen</h3>
               <p className="text-navbar-muted text-sm mb-4">
-                {FILTROS_CONSUMIDORES.find(f => f.value === filtroConsumidor)?.label} · {mesCons}
-                {incluirDetalle && " · con detalle"}
+                {consumidorSel
+                  ? `${consumidorSel.nombre} · ${mesCons} · con detalle`
+                  : <>
+                      {FILTROS_CONSUMIDORES.find(f => f.value === filtroConsumidor)?.label} · {mesCons}
+                      {incluirDetalle && " · con detalle"}
+                    </>}
               </p>
               <div className="flex gap-3">
                 <Button

@@ -17,11 +17,12 @@ import { solicitudesService } from "../../services/solicitudes.service";
 import type { ConsumidorPerfil } from "../../types/consumidor.types";
 import type { Solicitud, CupoConsumidor } from "../../types/solicitud.types";
 import { ACTIVIDADES, COMBUSTIBLES } from "../../utils/constants";
-import { formatFecha, formatIdPublico } from "../../utils/format";
+import { formatFecha, formatIdPublico, fechaLocalISO } from "../../utils/format";
+import { reportesService, mensajeDeErrorDescarga } from "../../services/reportes.service";
 import {
   ArrowLeft, User, MapPin, Shield,
   FileImage, AlertCircle, CheckCircle, ShieldAlert, ShieldOff, KeyRound, Send,
-  FileText, ChevronLeft, ChevronRight,
+  FileText, ChevronLeft, ChevronRight, FileSpreadsheet,
 } from "lucide-react";
 
 const ALERT_TIMEOUT = 4000;
@@ -57,6 +58,29 @@ function SolicitudesConsumidor({ perfilId }: { perfilId: number }) {
 
   const [cupo,      setCupo]      = useState<CupoConsumidor | null>(null);
   const [errorCupo, setErrorCupo] = useState(false);
+
+  // Descarga del reporte individual del mes actual (mismo endpoint que Reportes)
+  const [descargando, setDescargando] = useState<"PDF" | "EXCEL" | null>(null);
+  const [aviso,       setAviso]       = useState<{ type: "error" | "success"; message: string } | null>(null);
+  const avisoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flash = (type: "error" | "success", message: string) => {
+    setAviso({ type, message });
+    if (avisoTimerRef.current) clearTimeout(avisoTimerRef.current);
+    avisoTimerRef.current = setTimeout(() => setAviso(null), ALERT_TIMEOUT);
+  };
+
+  const descargarReporte = async (formato: "PDF" | "EXCEL") => {
+    setDescargando(formato);
+    try {
+      await reportesService.descargar("TODOS", formato, fechaLocalISO().slice(0, 7), true, perfilId);
+      flash("success", `Reporte ${formato} del mes descargado.`);
+    } catch (err) {
+      flash("error", await mensajeDeErrorDescarga(err, "No se pudo generar el reporte."));
+    } finally {
+      setDescargando(null);
+    }
+  };
 
   const cargar = useCallback(async (paginaActual: number) => {
     setLoading(true);
@@ -95,12 +119,28 @@ function SolicitudesConsumidor({ perfilId }: { perfilId: number }) {
       {errorCupo && <Alert type="error" message="No se pudo cargar el cupo del mes." />}
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="font-semibold text-foreground flex items-center gap-2">
             <FileText className="w-4 h-4 text-primary" />
             Solicitudes {total > 0 && <span className="text-muted-foreground font-normal">({total})</span>}
           </h2>
+          {/* Reporte del mes actual de este consumidor, con detalle */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Descargar reporte del mes:</span>
+            <Button variant="outline" size="sm" icon={<FileText className="w-3.5 h-3.5" />}
+              loading={descargando === "PDF"} disabled={descargando !== null}
+              onClick={() => descargarReporte("PDF")}>
+              PDF
+            </Button>
+            <Button variant="outline" size="sm" icon={<FileSpreadsheet className="w-3.5 h-3.5" />}
+              loading={descargando === "EXCEL"} disabled={descargando !== null}
+              onClick={() => descargarReporte("EXCEL")}>
+              Excel
+            </Button>
+          </div>
         </CardHeader>
+
+        {aviso && <div className="px-4 pt-4"><Alert type={aviso.type} message={aviso.message} /></div>}
 
         {error && <div className="px-4 pt-4"><Alert type="error" message={error} /></div>}
 

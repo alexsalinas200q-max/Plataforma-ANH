@@ -1,7 +1,7 @@
 // src/services/consumidores.service.ts
 
 import { api } from "../context/AuthContext";
-import type { ConsumidorPerfil } from "../types/consumidor.types";
+import type { ConsumidorPerfil, ConsumidorListItem } from "../types/consumidor.types";
 
 export const consumidoresService = {
 
@@ -21,6 +21,12 @@ export const consumidoresService = {
   }> => {
     const res = await api.get("/api/consumidores/", { params });
     return res.data;
+  },
+
+  // Búsqueda por nombre, apellido, email o N° de documento (search del backend).
+  buscar: async (texto: string): Promise<ConsumidorListItem[]> => {
+    const res = await api.get("/api/consumidores/", { params: { search: texto } });
+    return res.data.results ?? res.data;
   },
 
   getById: async (id: number): Promise<ConsumidorPerfil> => {

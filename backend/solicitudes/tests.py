@@ -1192,3 +1192,69 @@ class LitrosDespachadosCoincidenTests(TestCase):
 
         self.assertEqual(total_solicitudes, 65)
         self.assertEqual(total_consumidores, total_solicitudes)
+
+
+# ------------------------------------------------
+# LOTE C3 — REPORTE POR CONSUMIDOR
+# ------------------------------------------------
+
+class ReportePorConsumidorTests(TestCase):
+
+    URL = "/api/reportes/consumidores/"
+
+    def setUp(self):
+        from consumidores.models import DocumentoIdentidad
+        self.client = _anh_client("anh_c3@test.com")
+        self.uno  = _crear_consumidor("uno_c3@test.com")
+        self.otro = _crear_consumidor("otro_c3@test.com")
+        DocumentoIdentidad.objects.create(
+            perfil=self.uno, tipo_documento="CI", numero_documento="7654321",
+            anverso="", reverso="",
+        )
+        aprob = timezone.make_aware(datetime(2026, 8, 10, 12, 0))
+        desp  = timezone.make_aware(datetime(2026, 8, 11, 12, 0))
+        for perfil in (self.uno, self.otro):
+            _solicitud_en(perfil, "DESPACHADA", datetime(2026, 8, 10, 8, 0),
+                          fecha_aprobacion=aprob, fecha_despacho=desp,
+                          litros_aprobados=40, litros_despachados=40)
+        self.sin_datos = _crear_consumidor("vacio_c3@test.com")
+
+    def test_filtra_por_consumidor_y_fuerza_detalle(self):
+        from solicitudes.services.generar_reportes import get_consumidores
+
+        self.assertEqual(
+            [p.pk for p in get_consumidores("TODOS", date(2026, 8, 1), consumidor_id=self.uno.pk)],
+            [self.uno.pk],
+        )
+
+        r = self.client.get(self.URL, {"mes": "2026-08", "formato": "EXCEL",
+                                       "consumidor_id": self.uno.pk, "filtro": "CUPO_AGOTADO"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('filename="reporte_consumidor_7654321_2026-08.xlsx"', r["Content-Disposition"])
+        wb = _libro(r.content)
+        # Detalle forzado aunque no se pidió; filtro ignorado (no está agotado)
+        self.assertEqual(wb.sheetnames, ["Resumen", "Consumidores", "Detalle"])
+        self.assertEqual(wb["Consumidores"].max_row, 2)
+        self.assertEqual(wb["Detalle"].max_row, 2)
+
+        pdf = self.client.get(self.URL, {"mes": "2026-08", "formato": "PDF", "consumidor_id": self.uno.pk})
+        self.assertEqual(pdf.status_code, 200)
+        self.assertIn('filename="reporte_consumidor_7654321_2026-08.pdf"', pdf["Content-Disposition"])
+
+    def test_consumidor_inexistente_404(self):
+        r = self.client.get(self.URL, {"mes": "2026-08", "consumidor_id": 999999})
+        self.assertEqual(r.status_code, 404)
+
+    def test_consumidor_sin_solicitudes_en_el_mes_400(self):
+        r = self.client.get(self.URL, {"mes": "2026-08", "consumidor_id": self.sin_datos.pk})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.get(self.URL, {"mes": "2026-07", "consumidor_id": self.uno.pk})
+        self.assertEqual(r.status_code, 400)
+
+    def test_queries_fijas_por_consumidor(self):
+        from solicitudes.services.generar_reportes import generar_reporte_excel, generar_reporte_pdf
+        mes = date(2026, 8, 1)
+        with self.assertNumQueries(3):
+            generar_reporte_pdf("TODOS", mes, consumidor_id=self.uno.pk)
+        with self.assertNumQueries(3):
+            generar_reporte_excel("TODOS", mes, consumidor_id=self.uno.pk)

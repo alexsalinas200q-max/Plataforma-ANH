@@ -10,6 +10,8 @@
 #                    cambia a mano desde DetalleConsumidor). Agregan la
 #                    columna "Motivo" (motivo_bloqueo).
 #
+# Con consumidor_id: reporte de UN consumidor (siempre con detalle).
+#
 # Por consumidor: solicitudes creadas en el mes (cualquier estado),
 # litros despachados de esas mismas solicitudes (creadas en el mes, la
 # misma base que el reporte de solicitudes, así los totales coinciden)
@@ -18,6 +20,7 @@
 # queryset anotado + prefetch: la cantidad de queries es fija (2 sin
 # detalle, 3 con detalle) sin importar cuántos consumidores haya.
 
+import re
 from datetime import date
 
 from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
@@ -48,7 +51,8 @@ NOTA_DEFINICIONES = (
 # DATOS
 # ------------------------------------------------
 
-def get_consumidores(filtro: str, mes: date, con_solicitudes: bool = False):
+def get_consumidores(filtro: str, mes: date, con_solicitudes: bool = False,
+                     consumidor_id: int | None = None):
     """
     Lista de ConsumidorPerfil del reporte, ordenada por litros
     despachados (mayor a menor). Cada perfil trae anotados
@@ -87,6 +91,9 @@ def get_consumidores(filtro: str, mes: date, con_solicitudes: bool = False):
         )
         .order_by("-litros_despachados_mes", "user__apellido_paterno", "user__nombres")
     )
+
+    if consumidor_id is not None:
+        qs = qs.filter(pk=consumidor_id)
 
     if filtro == "CUPO_AGOTADO":
         qs = qs.filter(cupo_usado_mes__gte=CUPO_MENSUAL_LITROS)
@@ -136,6 +143,13 @@ def titulo_reporte(filtro: str, mes: date) -> str:
     return f"Reporte de consumidores — {FILTROS[filtro]} — {formatear_mes_anio_largo(mes)}"
 
 
+def nombre_archivo_consumidor(perfil, mes: date, extension: str) -> str:
+    """reporte_consumidor_<CI>_AAAA-MM.<ext> (o el id si no tiene documento)."""
+    docs = perfil.documentos.all()
+    ident = re.sub(r"[^A-Za-z0-9-]", "", docs[0].numero_documento) if docs else ""
+    return f"reporte_consumidor_{ident or perfil.pk}_{mes:%Y-%m}.{extension}"
+
+
 def nombre_archivo_consumidores(filtro: str, mes: date, extension: str) -> str:
     sufijo = "" if filtro == "TODOS" else f"_{filtro.lower()}"
     return f"reporte_consumidores_{mes:%Y-%m}{sufijo}.{extension}"
@@ -164,6 +178,23 @@ def _indicadores(consumidores: list) -> list[tuple[str, int]]:
     ]
 
 
+def _contexto(filtro: str, mes: date, consumidores: list, individual: bool):
+    """(título, líneas de encabezado, indicadores) del reporte."""
+    if individual and consumidores:
+        d = fila_consumidor(consumidores[0])
+        return (
+            f"Reporte del consumidor — {d['nombre']} — {formatear_mes_anio_largo(mes)}",
+            [f"Mes: {formatear_mes_anio_largo(mes)}", f"{d['ci']} · {d['municipio']}"],
+            [
+                ("Solicitudes del mes", d["solicitudes_mes"]),
+                ("Litros despachados",  d["litros_despachados"]),
+                ("Cupo usado",          d["cupo_texto"]),
+                ("Estado de cuenta",    d["estado_cuenta"]),
+            ],
+        )
+    return titulo_reporte(filtro, mes), _lineas_encabezado(filtro, mes), _indicadores(consumidores)
+
+
 CAB_DETALLE = ["Código", "Fecha", "Combustible", "Litros sol.", "Litros desp.", "Estado", "Estación"]
 
 
@@ -171,16 +202,40 @@ CAB_DETALLE = ["Código", "Fecha", "Combustible", "Litros sol.", "Litros desp.",
 # PDF
 # ------------------------------------------------
 
-def generar_reporte_pdf(filtro: str, mes: date, incluir_detalle: bool = False) -> bytes:
+def _tabla_solicitudes(solicitudes):
+    return fmt.tabla(
+        CAB_DETALLE,
+        [[
+            str(s.id_publico)[:8].upper(),
+            formatear_fecha(s.fecha_creacion),
+            s.get_tipo_combustible_display(),
+            f"{s.litros_solicitados} L",
+            f"{s.litros_despachados} L" if s.litros_despachados is not None else "—",
+            s.get_estado_display(),
+            s.estacion_servicio.nombre if s.estacion_servicio else "—",
+        ] for s in solicitudes],
+        anchos_cm=[2.6, 2.6, 2.8, 2.6, 2.6, 3.0, 10.5],
+        numericas=frozenset({3, 4}),
+    )
+
+
+def generar_reporte_pdf(filtro: str, mes: date, incluir_detalle: bool = False,
+                        consumidor_id: int | None = None) -> bytes:
     from reportlab.lib.units import cm
     from reportlab.platypus import KeepTogether, Spacer
 
-    consumidores = get_consumidores(filtro, mes, con_solicitudes=incluir_detalle)
+    individual = consumidor_id is not None
+    if individual:
+        filtro, incluir_detalle = "TODOS", True
+
+    consumidores = get_consumidores(filtro, mes, con_solicitudes=incluir_detalle,
+                                    consumidor_id=consumidor_id)
     con_motivo   = filtro in FILTROS_ALERTA
+    titulo, lineas, crudos = _contexto(filtro, mes, consumidores, individual)
 
     indicadores = [
         (label, f"{v:,} L".replace(",", ".") if label == "Litros despachados" else str(v))
-        for label, v in _indicadores(consumidores)
+        for label, v in crudos
     ]
 
     filas = []
@@ -196,6 +251,18 @@ def generar_reporte_pdf(filtro: str, mes: date, incluir_detalle: bool = False) -
     anchos = ([5.2, 2.9, 3.0, 2.3, 2.6, 2.3, 2.4, 6.0] if con_motivo
               else [7.2, 3.4, 4.2, 2.8, 3.1, 2.8, 3.2])
 
+    # Individual: el recuadro y el encabezado ya tienen sus datos, así
+    # que va directo a la tabla de sus solicitudes (sin la tabla de una
+    # sola fila ni el encabezado de bloque repetido).
+    if individual:
+        elementos = [fmt.recuadro_resumen(indicadores), fmt.nota(NOTA_DEFINICIONES)]
+        if consumidores and consumidores[0].solicitudes_del_mes:
+            elementos += [
+                fmt.subtitulo("Solicitudes del mes"),
+                _tabla_solicitudes(consumidores[0].solicitudes_del_mes),
+            ]
+        return fmt.construir_pdf(titulo, lineas, elementos)
+
     elementos = [
         fmt.recuadro_resumen(indicadores),
         fmt.subtitulo("Consumidores"),
@@ -209,20 +276,7 @@ def generar_reporte_pdf(filtro: str, mes: date, incluir_detalle: bool = False) -
             elementos.append(fmt.subtitulo("Detalle de solicitudes por consumidor"))
         for p in con_solicitudes:
             d = fila_consumidor(p)
-            tabla_sol = fmt.tabla(
-                CAB_DETALLE,
-                [[
-                    str(s.id_publico)[:8].upper(),
-                    formatear_fecha(s.fecha_creacion),
-                    s.get_tipo_combustible_display(),
-                    f"{s.litros_solicitados} L",
-                    f"{s.litros_despachados} L" if s.litros_despachados is not None else "—",
-                    s.get_estado_display(),
-                    s.estacion_servicio.nombre if s.estacion_servicio else "—",
-                ] for s in p.solicitudes_del_mes],
-                anchos_cm=[2.6, 2.6, 2.8, 2.6, 2.6, 3.0, 10.5],
-                numericas=frozenset({3, 4}),
-            )
+            tabla_sol = _tabla_solicitudes(p.solicitudes_del_mes)
             # Una subsección no se parte entre páginas si entra en una;
             # si es más larga que una página, KeepTogether la deja fluir.
             elementos.append(KeepTogether([
@@ -231,23 +285,26 @@ def generar_reporte_pdf(filtro: str, mes: date, incluir_detalle: bool = False) -
                 Spacer(1, 0.3 * cm),
             ]))
 
-    return fmt.construir_pdf(titulo_reporte(filtro, mes), _lineas_encabezado(filtro, mes), elementos)
+    return fmt.construir_pdf(titulo, lineas, elementos)
 
 
 # ------------------------------------------------
 # EXCEL
 # ------------------------------------------------
 
-def generar_reporte_excel(filtro: str, mes: date, incluir_detalle: bool = False) -> bytes:
-    consumidores = get_consumidores(filtro, mes, con_solicitudes=incluir_detalle)
+def generar_reporte_excel(filtro: str, mes: date, incluir_detalle: bool = False,
+                          consumidor_id: int | None = None) -> bytes:
+    individual = consumidor_id is not None
+    if individual:
+        filtro, incluir_detalle = "TODOS", True
+
+    consumidores = get_consumidores(filtro, mes, con_solicitudes=incluir_detalle,
+                                    consumidor_id=consumidor_id)
     con_motivo   = filtro in FILTROS_ALERTA
+    titulo, lineas, indicadores = _contexto(filtro, mes, consumidores, individual)
 
     wb = fmt.nuevo_libro()
-    fmt.hoja_resumen(
-        wb, titulo_reporte(filtro, mes),
-        _lineas_encabezado(filtro, mes) + [NOTA_DEFINICIONES],
-        _indicadores(consumidores),
-    )
+    fmt.hoja_resumen(wb, titulo, lineas + [NOTA_DEFINICIONES], indicadores)
 
     filas = []
     for p in consumidores:

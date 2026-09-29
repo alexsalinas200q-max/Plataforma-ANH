@@ -70,6 +70,17 @@ export interface ConsumidorPerfil {
 // CATÁLOGOS
 // ------------------------------------------------
 
+// Fila del listado GET /api/consumidores/ (ConsumidorPerfilListSerializer)
+export interface ConsumidorListItem {
+  id:                   number;
+  nombre_completo:      string;
+  email:                string;
+  estado_identidad:     EstadoIdentidad;
+  alerta_repetitividad: EstadoAlerta;
+  municipio_nombre:     string;
+  fecha_creacion:       string;
+}
+
 export interface Departamento {
   id:     number;
   nombre: string;
