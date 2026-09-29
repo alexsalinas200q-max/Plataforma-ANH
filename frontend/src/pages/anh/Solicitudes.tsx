@@ -20,23 +20,19 @@ import {
 // CONSTANTES
 // ------------------------------------------------
 
-// Tabs visibles directamente. Los estados menos frecuentes
-// (Cancelada, Expirada) van detrás de "Más" para no saturar la barra.
-const TABS_VISIBLES = [
+// Todos los estados como pestañas: la barra ya tiene scroll
+// horizontal. (Antes Rechazadas/Canceladas/Expiradas iban en un menú
+// "Más" que quedaba recortado por ese mismo overflow y no se veía.)
+const TABS = [
   { value: "",           label: "Todas" },
   { value: "PENDIENTE",  label: "Pendientes" },
   { value: "OBSERVADA",  label: "Observadas" },
   { value: "APROBADA",   label: "Aprobadas" },
   { value: "DESPACHADA", label: "Despachadas" },
-];
-
-const TABS_MAS = [
   { value: "RECHAZADA",  label: "Rechazadas" },
   { value: "CANCELADA",  label: "Canceladas" },
   { value: "EXPIRADA",   label: "Expiradas" },
 ];
-
-const TODOS_LOS_ESTADOS = [...TABS_VISIBLES, ...TABS_MAS];
 
 const POR_PAGINA = 20;
 
@@ -59,13 +55,6 @@ export default function SolicitudesANH() {
   const [busqueda,      setBusqueda]      = useState("");
   const [busquedaInput, setBusquedaInput] = useState("");
   const [pagina,        setPagina]        = useState(1);
-
-  // Menú "Más" para estados poco frecuentes
-  const [masAbierto, setMasAbierto] = useState(false);
-
-  // Si el tab activo es uno de los que están dentro de "Más",
-  // mostramos su label directamente en vez del botón "Más".
-  const tabMasActivo = TABS_MAS.find(t => t.value === estado);
 
   // ------------------------------------------------
   // CARGA DE DATOS
@@ -126,7 +115,6 @@ export default function SolicitudesANH() {
   const onTabChange = (nuevoEstado: string) => {
     setEstado(nuevoEstado);
     setPagina(1);
-    setMasAbierto(false);
   };
 
   const totalPaginas = total > 0 ? Math.ceil(total / POR_PAGINA) : 1;
@@ -162,7 +150,7 @@ export default function SolicitudesANH() {
 
           {/* TABS DE ESTADO */}
           <div className="flex items-center border-b border-border overflow-x-auto">
-            {TABS_VISIBLES.map(tab => (
+            {TABS.map(tab => (
               <button
                 key={tab.value}
                 onClick={() => onTabChange(tab.value)}
@@ -175,53 +163,6 @@ export default function SolicitudesANH() {
                 {tab.label}
               </button>
             ))}
-
-            {/* Tab activo que está dentro de "Más" — se muestra directamente */}
-            {tabMasActivo && (
-              <button
-                className="px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 border-primary text-primary"
-              >
-                {tabMasActivo.label}
-              </button>
-            )}
-
-            {/* Menú "Más" */}
-            <div className="relative ml-auto">
-              <button
-                onClick={() => setMasAbierto(!masAbierto)}
-                className={`px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors flex items-center gap-1 ${
-                  tabMasActivo
-                    ? "border-transparent text-muted-foreground hover:text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                Más
-                <svg className={`w-3.5 h-3.5 transition-transform ${masAbierto ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-
-              {masAbierto && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setMasAbierto(false)} />
-                  <div className="absolute right-0 top-full mt-1 z-20 bg-card border border-border rounded-xl shadow-lg py-1 min-w-[160px]">
-                    {TABS_MAS.map(tab => (
-                      <button
-                        key={tab.value}
-                        onClick={() => onTabChange(tab.value)}
-                        className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
-                          estado === tab.value
-                            ? "text-primary font-medium bg-primary/5"
-                            : "text-foreground hover:bg-background"
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
           </div>
 
           {/* BÚSQUEDA (funciona dentro del tab activo) */}
@@ -232,7 +173,7 @@ export default function SolicitudesANH() {
                 <input
                   value={busquedaInput}
                   onChange={e => setBusquedaInput(e.target.value)}
-                  placeholder={`Buscar${estado ? ` en ${TODOS_LOS_ESTADOS.find(e => e.value === estado)?.label?.toLowerCase() ?? estado.toLowerCase()}` : ""}...`}
+                  placeholder={`Buscar${estado ? ` en ${TABS.find(e => e.value === estado)?.label?.toLowerCase() ?? estado.toLowerCase()}` : ""}...`}
                   className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-border text-sm bg-input focus:border-primary focus:ring-2 focus:ring-primary/20 focus:bg-card outline-none"
                 />
               </div>
@@ -248,7 +189,7 @@ export default function SolicitudesANH() {
             {busqueda && (
               <p className="text-xs text-primary mt-2">
                 Resultados para "<strong>{busqueda}</strong>"
-                {estado && ` en ${TODOS_LOS_ESTADOS.find(e => e.value === estado)?.label?.toLowerCase()}`}
+                {estado && ` en ${TABS.find(e => e.value === estado)?.label?.toLowerCase()}`}
               </p>
             )}
           </div>
@@ -266,7 +207,7 @@ export default function SolicitudesANH() {
               </p>
               <p className="text-muted-foreground text-sm">
                 {busqueda
-                  ? `No se encontraron solicitudes para "${busqueda}"${estado ? ` en ${TODOS_LOS_ESTADOS.find(e => e.value === estado)?.label?.toLowerCase()}` : ""}.`
+                  ? `No se encontraron solicitudes para "${busqueda}"${estado ? ` en ${TABS.find(e => e.value === estado)?.label?.toLowerCase()}` : ""}.`
                   : "No hay solicitudes en este estado."
                 }
               </p>

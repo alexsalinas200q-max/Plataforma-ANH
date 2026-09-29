@@ -526,3 +526,53 @@ class EmailAprobacionHoraLocalTests(TestCase):
             enviar_notificacion_solicitud_aprobada(solicitud)
 
         self.assertIn("Válida hasta    : 10/09/2026 21:45", mail.outbox[0].body)
+
+
+# ------------------------------------------------
+# LOTE B — MOTIVO VISIBLE EN EL HISTORIAL DEL CONSUMIDOR (H2)
+# ------------------------------------------------
+
+class ListadoExponeMotivoTests(TestCase):
+
+    def test_listado_del_consumidor_incluye_observacion_anh(self):
+        consumidor = _crear_consumidor("cons_motivo@test.com")
+        consumidor.user.estado_cuenta = User.EstadoCuenta.ACTIVO
+        consumidor.user.save(update_fields=["estado_cuenta"])
+
+        s = _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.RECHAZADA)
+        Solicitud.objects.filter(pk=s.pk).update(
+            observacion_anh="Documento ilegible.",
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=consumidor.user)
+        response = client.get(reverse("solicitud-list"))
+
+        self.assertEqual(response.status_code, 200)
+        fila = response.data["results"][0]
+        self.assertEqual(fila["estado"], "RECHAZADA")
+        self.assertEqual(fila["observacion_anh"], "Documento ilegible.")
+
+
+class RechazoAutomaticoMotivoTests(TestCase):
+
+    def test_rechazo_por_vencimiento_escribe_motivo_fijo(self):
+        from django.test import override_settings
+        from solicitudes.services.expirar_solicitudes import rechazar_observadas_vencidas
+
+        consumidor = _crear_consumidor("cons_auto@test.com")
+        s = _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.OBSERVADA)
+        Solicitud.objects.filter(pk=s.pk).update(
+            observacion_anh="Adjunta una foto legible del CI.",
+            fecha_limite_respuesta=timezone.now() - timezone.timedelta(hours=1),
+        )
+
+        with override_settings(BREVO_API_KEY=""):
+            self.assertEqual(rechazar_observadas_vencidas(), 1)
+
+        s.refresh_from_db()
+        self.assertEqual(s.estado, Solicitud.EstadoSolicitud.RECHAZADA)
+        self.assertEqual(
+            s.observacion_anh,
+            "Rechazada automáticamente: no se respondió la observación dentro del plazo.",
+        )

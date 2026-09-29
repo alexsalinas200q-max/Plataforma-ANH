@@ -120,6 +120,10 @@ class EstacionServicioListSerializer(serializers.ModelSerializer):
             "id",
             "nombre",
             "codigo",
+            # La tarjeta del listado la muestra y el modal de edición
+            # arranca con el objeto del listado: sin este campo, el
+            # formulario abría con Dirección vacía (obligatoria).
+            "direccion",
             "provincia_id",
             "departamento_id",
             "municipio",

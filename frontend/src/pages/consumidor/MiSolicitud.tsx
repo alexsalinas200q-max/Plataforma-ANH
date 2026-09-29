@@ -72,6 +72,13 @@ const minutosRestantes = (fechaLimite: string | null): number => {
   return Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
 };
 
+// Texto bajo cada fila del historial: por qué terminó así la solicitud.
+const detalleHistorial = (s: Solicitud): string | null => {
+  if (s.estado === "RECHAZADA" && s.observacion_anh) return `Motivo: ${s.observacion_anh}`;
+  if (s.estado === "EXPIRADA") return "No se retiró el combustible antes del vencimiento.";
+  return null;
+};
+
 // ------------------------------------------------
 // COMPONENTE
 // ------------------------------------------------
@@ -824,17 +831,25 @@ export default function MiSolicitud() {
             </button>
             {mostrarHistorial && (
               <div className="border-t border-border divide-y divide-border">
-                {historial.map(s => (
-                  <div key={s.id_publico} className="px-6 py-3 flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-foreground">
-                        #{formatIdPublico(s.id_publico)} — {COMBUSTIBLES[s.tipo_combustible]} {s.litros_solicitados}L
-                      </p>
-                      <p className="text-xs text-muted-foreground">{formatFecha(s.fecha_creacion)}</p>
+                {historial.map(s => {
+                  const detalle = detalleHistorial(s);
+                  return (
+                    <div key={s.id_publico} className="px-6 py-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-foreground">
+                            #{formatIdPublico(s.id_publico)} — {COMBUSTIBLES[s.tipo_combustible]} {s.litros_solicitados}L
+                          </p>
+                          <p className="text-xs text-muted-foreground">{formatFecha(s.fecha_creacion)}</p>
+                        </div>
+                        <EstadoSolicitudBadge estado={s.estado} />
+                      </div>
+                      {detalle && (
+                        <p className="text-xs text-muted-foreground mt-1.5">{detalle}</p>
+                      )}
                     </div>
-                    <EstadoSolicitudBadge estado={s.estado} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

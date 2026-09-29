@@ -19,6 +19,11 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+MOTIVO_RECHAZO_AUTOMATICO = (
+    "Rechazada automáticamente: no se respondió la observación "
+    "dentro del plazo."
+)
+
 
 # ------------------------------------------------
 # 1. EXPIRAR solicitudes APROBADAS no despachadas
@@ -90,8 +95,13 @@ def rechazar_observadas_vencidas() -> int:
     total = 0
     with transaction.atomic():
         for solicitud in observadas_vencidas.select_for_update():
-            solicitud.estado = Solicitud.EstadoSolicitud.RECHAZADA
-            solicitud.save(update_fields=["estado", "fecha_actualizacion"])
+            # El motivo pasa a ser el rechazo automático: es lo que ve el
+            # consumidor en su historial y en el email ("Motivo: …"). El
+            # texto de la observación original queda en la nota de
+            # auditoría del paso a OBSERVADA.
+            solicitud.estado          = Solicitud.EstadoSolicitud.RECHAZADA
+            solicitud.observacion_anh = MOTIVO_RECHAZO_AUTOMATICO
+            solicitud.save(update_fields=["estado", "observacion_anh", "fecha_actualizacion"])
 
             from .registrar_auditoria import registrar_cambio_estado
             registrar_cambio_estado(

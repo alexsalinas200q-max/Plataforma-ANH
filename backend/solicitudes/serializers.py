@@ -132,6 +132,9 @@ class SolicitudListSerializer(serializers.ModelSerializer):
             "litros_solicitados",
             "litros_aprobados",
             "litros_despachados",
+            # Motivo de observación/rechazo: el historial del consumidor
+            # (MiSolicitud) se arma con este listado, no con el detalle.
+            "observacion_anh",
             "observacion_despacho",
             "uso_combustible",
             "fecha_aprobacion",
