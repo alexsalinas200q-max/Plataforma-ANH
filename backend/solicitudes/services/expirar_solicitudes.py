@@ -7,9 +7,15 @@
 # llama desde los listados/dashboard/estadísticas (ver solicitudes/
 # views.py, views_dashboard.py, views_estadisticas.py) para que las
 # solicitudes vencidas se corrijan antes de mostrarse, sin depender de
-# ningún proceso programado. El management command sigue existiendo
-# para uso manual o, si más adelante hace falta, un Cron Schedule de
-# Railway.
+# ningún proceso programado. En producción, además, un servicio Cron de
+# Railway corre el management command `expirar_solicitudes` cada 10
+# minutos; la ejecución perezosa queda como respaldo.
+#
+# Emails: se envían con transaction.on_commit, nunca dentro de la
+# transacción que tiene las filas bloqueadas (select_for_update). Así
+# una llamada lenta a Brevo (hasta 10 s de timeout) no retiene los
+# locks, y si la transacción se revierte no sale ningún email de un
+# rechazo que no quedó guardado.
 
 import logging
 from datetime import timedelta
@@ -116,17 +122,27 @@ def rechazar_observadas_vencidas() -> int:
             )
             total += 1
 
-            # Notificar al consumidor — no debe romper el resto del lote
-            try:
-                from users.email_service import enviar_notificacion_solicitud_rechazada
-                enviar_notificacion_solicitud_rechazada(solicitud)
-            except Exception:
-                logger.error(
-                    "No se pudo notificar el rechazo automático de %s",
-                    solicitud.id_publico, exc_info=True,
-                )
+            # Notificar al consumidor recién cuando el rechazo quede
+            # confirmado. s=solicitud fija la instancia de esta vuelta.
+            transaction.on_commit(lambda s=solicitud: _notificar_rechazo_automatico(s))
 
     return total
+
+
+def _notificar_rechazo_automatico(solicitud) -> None:
+    """
+    Corre después del commit. Un fallo de envío no debe romper el
+    resto de las notificaciones del lote ni la request que disparó la
+    expiración perezosa: solo se logea.
+    """
+    try:
+        from users.email_service import enviar_notificacion_solicitud_rechazada
+        enviar_notificacion_solicitud_rechazada(solicitud)
+    except Exception:
+        logger.error(
+            "No se pudo notificar el rechazo automático de %s",
+            solicitud.id_publico, exc_info=True,
+        )
 
 
 # ------------------------------------------------

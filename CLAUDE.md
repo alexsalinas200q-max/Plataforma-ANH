@@ -20,7 +20,7 @@ python manage.py makemigrations     # create migrations after model changes
 python manage.py test               # run all tests
 python manage.py test solicitudes   # run tests for one app
 python manage.py test solicitudes.tests.ClassName.test_method  # single test
-python manage.py runcrons           # manually trigger cron jobs (see below)
+python manage.py expirar_solicitudes  # expira/rechaza solicitudes vencidas (ver "solicitudes/" abajo)
 python manage.py createsuperuser
 ```
 
@@ -47,7 +47,7 @@ Located in `backend/`, one directory per app, standard Django layout (`models.py
 - **`users/`** — custom `User` model (`AUTH_USER_MODEL = "users.User"`), authentication (login/refresh/logout, email verification via PIN, password recovery), and the RBAC permission base classes every other app builds on (`permissions.py`). Also owns `email_service.py` (Brevo HTTP API in prod, console backend in dev) and `authentication.py` (`CookieJWTAuthentication`).
 - **`consumidores/`** — consumer profile and identity documents.
 - **`estaciones/`** — gas stations (estaciones de servicio) CRUD and status.
-- **`solicitudes/`** — the core domain: fuel request lifecycle. Business logic lives in **`services/`** (one file per operation: `aprobar_solicitud.py`, `rechazar_solicitud.py`, `despachar_solicitud.py`, `observar_solicitud.py`, `generar_comprobante.py`, `generar_declaracion_jurada.py`, `verificar_repetitividad.py`, `registrar_auditoria.py`, report generators) rather than in `views.py` — views call into these services. Also has `cron.py` (scheduled jobs, e.g. hourly expiration of approved-but-unclaimed requests — run manually via `python manage.py runcrons` or `expirar_solicitudes` management command), `views_dashboard.py`, `views_estadisticas.py`, `views_reportes.py` as separate view modules beyond the default `views.py`, and `filters.py` for `django-filter` querysets.
+- **`solicitudes/`** — the core domain: fuel request lifecycle. Business logic lives in **`services/`** (one file per operation: `aprobar_solicitud.py`, `rechazar_solicitud.py`, `despachar_solicitud.py`, `observar_solicitud.py`, `generar_comprobante.py`, `generar_declaracion_jurada.py`, `verificar_repetitividad.py`, `registrar_auditoria.py`, report generators) rather than in `views.py` — views call into these services. Expiration of overdue requests (APROBADA → EXPIRADA, OBSERVADA past its 24 h → RECHAZADA) lives in `services/expirar_solicitudes.py` and runs two ways: the `expirar_solicitudes` management command, scheduled in production as a Railway Cron service every 10 minutes, and a lazy fallback (`expirar_solicitudes_vencidas_seguro()`, 5-minute per-worker guard) called from the list, dashboard and statistics views. There is no `cron.py`/`runcrons` (django-cron was never installed). Rejection emails are sent via `transaction.on_commit`, never inside the locked transaction. Also has `views_dashboard.py`, `views_estadisticas.py`, `views_reportes.py` as separate view modules beyond the default `views.py`, and `filters.py` for `django-filter` querysets.
 - **`configuracion/`** and **`catalogos/`** — app-wide settings and reference/lookup data (catálogos have `fixtures/`).
 
 Routing (`core/urls.py`) mounts apps under `/api/<app>/...` and documents the generated routes inline as comments above each `include()`. When adding endpoints, follow that same comment convention.
@@ -195,10 +195,12 @@ Next:
 - **Presentación de datos en reportes PDF/Excel** necesita mejoras
   (formato, layout) — sin detalle todavía de qué específicamente,
   revisar con el usuario.
-- **Expiración de solicitudes por tiempo no probada.** La lógica
-  vive ahora en `solicitudes/services/expirar_solicitudes.py`
-  (reemplazó `cron.py`) — falta probarla end-to-end (cron manual
-  vía `runcrons` o el management command).
+- **Expiración de solicitudes: falta verificar el Cron en
+  producción.** La lógica (`solicitudes/services/expirar_solicitudes.py`)
+  corre con el management command `expirar_solicitudes` (servicio Cron
+  de Railway cada 10 min) y, como respaldo, de forma perezosa desde los
+  listados. Falta confirmar end-to-end en Railway que el servicio Cron
+  corre y termina (logs "Nada para expirar…" / conteos).
 
 ### Baja prioridad
 - **Ajustes de responsive en móvil** — pendientes, menores.

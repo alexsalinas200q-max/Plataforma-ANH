@@ -611,3 +611,60 @@ class HistorialPorConsumidorTests(TestCase):
         self.assertEqual(por_id[str(propia.id_publico)]["estacion_nombre"], "Estación de prueba")
         sin_estacion = next(r for r in response.data["results"] if r["id_publico"] != str(propia.id_publico))
         self.assertEqual(sin_estacion["estacion_nombre"], "—")
+
+
+# ------------------------------------------------
+# LOTE E — EMAIL DEL RECHAZO AUTOMÁTICO DESPUÉS DEL COMMIT
+# ------------------------------------------------
+
+class RechazoAutomaticoEmailOnCommitTests(TestCase):
+    """
+    TestCase envuelve cada test en una transacción que nunca se
+    confirma, así que los on_commit se inspeccionan con
+    captureOnCommitCallbacks.
+    """
+
+    def setUp(self):
+        consumidor = _crear_consumidor("cons_commit@test.com")
+        self.solicitud = _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.OBSERVADA)
+        Solicitud.objects.filter(pk=self.solicitud.pk).update(
+            observacion_anh="Adjunta una foto legible del CI.",
+            fecha_limite_respuesta=timezone.now() - timezone.timedelta(hours=1),
+        )
+
+    def test_email_sale_recien_cuando_se_confirma_la_transaccion(self):
+        from django.core import mail
+        from django.test import override_settings
+        from solicitudes.services.expirar_solicitudes import rechazar_observadas_vencidas
+
+        with override_settings(BREVO_API_KEY=""):
+            with self.captureOnCommitCallbacks(execute=False) as callbacks:
+                self.assertEqual(rechazar_observadas_vencidas(), 1)
+                # Dentro de la transacción: todavía no salió nada
+                self.assertEqual(len(mail.outbox), 0)
+
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()  # lo que Django corre al confirmar
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["cons_commit@test.com"])
+
+    def test_si_la_transaccion_se_revierte_no_sale_email(self):
+        from django.core import mail
+        from django.test import override_settings
+        from solicitudes.services.expirar_solicitudes import rechazar_observadas_vencidas
+
+        class Revertir(Exception):
+            pass
+
+        with override_settings(BREVO_API_KEY=""):
+            with self.captureOnCommitCallbacks(execute=True) as callbacks:
+                with self.assertRaises(Revertir):
+                    with transaction.atomic():
+                        rechazar_observadas_vencidas()
+                        raise Revertir()
+
+        self.assertEqual(callbacks, [])
+        self.assertEqual(len(mail.outbox), 0)
+        self.solicitud.refresh_from_db()
+        self.assertEqual(self.solicitud.estado, Solicitud.EstadoSolicitud.OBSERVADA)
