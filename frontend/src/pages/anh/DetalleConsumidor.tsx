@@ -1,23 +1,27 @@
 // src/pages/anh/DetalleConsumidor.tsx
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
 import { Card, CardHeader, CardBody } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Alert } from "../../components/ui/Alert";
 import { Spinner } from "../../components/ui/Spinner";
-import { EstadoIdentidadBadge, AlertaBadge } from "../../components/ui/EstadoBadge";
+import { EstadoIdentidadBadge, AlertaBadge, EstadoSolicitudBadge } from "../../components/ui/EstadoBadge";
+import { CupoMensualWidget } from "../../components/ui/CupoMensualWidget";
 import { EnlaceEnviadoModal } from "../../components/ui/EnlaceEnviadoModal";
 import { Modal } from "../../components/ui/Modal";
 import { consumidoresService } from "../../services/consumidores.service";
 import { usersService } from "../../services/users.service";
+import { solicitudesService } from "../../services/solicitudes.service";
 import type { ConsumidorPerfil } from "../../types/consumidor.types";
-import { ACTIVIDADES } from "../../utils/constants";
-import { formatFecha } from "../../utils/format";
+import type { Solicitud, CupoConsumidor } from "../../types/solicitud.types";
+import { ACTIVIDADES, COMBUSTIBLES } from "../../utils/constants";
+import { formatFecha, formatIdPublico } from "../../utils/format";
 import {
   ArrowLeft, User, MapPin, Shield,
   FileImage, AlertCircle, CheckCircle, ShieldAlert, ShieldOff, KeyRound, Send,
+  FileText, ChevronLeft, ChevronRight,
 } from "lucide-react";
 
 const ALERT_TIMEOUT = 4000;
@@ -27,6 +31,166 @@ function Dato({ label, value }: { label: string; value: string | number | null |
     <div>
       <p className="text-xs text-muted-foreground mb-0.5">{label}</p>
       <p className="text-sm font-medium text-foreground">{value ?? "—"}</p>
+    </div>
+  );
+}
+
+// Mismo tamaño de página que el backend (PAGE_SIZE) y que Solicitudes.
+const POR_PAGINA = 20;
+
+const thCls = "px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide";
+
+// ------------------------------------------------
+// HISTORIAL DE SOLICITUDES DEL CONSUMIDOR
+// Cupo del mes + listado paginado (GET /api/solicitudes/?consumidor=).
+// perfilId es el id de ConsumidorPerfil, no el de User.
+// ------------------------------------------------
+
+function SolicitudesConsumidor({ perfilId }: { perfilId: number }) {
+  const navigate = useNavigate();
+
+  const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
+  const [total,       setTotal]       = useState(0);
+  const [pagina,      setPagina]      = useState(1);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState("");
+
+  const [cupo,      setCupo]      = useState<CupoConsumidor | null>(null);
+  const [errorCupo, setErrorCupo] = useState(false);
+
+  const cargar = useCallback(async (paginaActual: number) => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await solicitudesService.getAll({
+        consumidor: String(perfilId),
+        page:       String(paginaActual),
+      });
+      setSolicitudes(res.results ?? []);
+      setTotal(res.count ?? 0);
+    } catch {
+      setError("No se pudieron cargar las solicitudes del consumidor.");
+      setSolicitudes([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [perfilId]);
+
+  useEffect(() => { cargar(pagina); }, [pagina, cargar]);
+
+  useEffect(() => {
+    solicitudesService.obtenerCupoConsumidor(perfilId)
+      .then(setCupo)
+      .catch(() => setErrorCupo(true));
+  }, [perfilId]);
+
+  const totalPaginas = Math.ceil(total / POR_PAGINA);
+
+  return (
+    <div className="space-y-3">
+      {cupo && (
+        <CupoMensualWidget usado={cupo.usado} total={cupo.total_mes} disponible={cupo.disponible} />
+      )}
+      {errorCupo && <Alert type="error" message="No se pudo cargar el cupo del mes." />}
+
+      <Card>
+        <CardHeader>
+          <h2 className="font-semibold text-foreground flex items-center gap-2">
+            <FileText className="w-4 h-4 text-primary" />
+            Solicitudes {total > 0 && <span className="text-muted-foreground font-normal">({total})</span>}
+          </h2>
+        </CardHeader>
+
+        {error && <div className="px-4 pt-4"><Alert type="error" message={error} /></div>}
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Spinner size="lg" />
+          </div>
+        ) : solicitudes.length === 0 ? (
+          !error && (
+            <p className="text-sm text-muted-foreground text-center py-10 px-4">
+              Este consumidor aún no tiene solicitudes.
+            </p>
+          )
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className={thCls}>Código</th>
+                  <th className={thCls}>Fecha</th>
+                  <th className={thCls}>Combustible</th>
+                  <th className={thCls}>Litros sol. / apr.</th>
+                  <th className={thCls}>Estado</th>
+                  <th className={thCls}>Estación</th>
+                  <th className="px-4 py-3 w-8"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {solicitudes.map(s => (
+                  <tr
+                    key={s.id_publico}
+                    onClick={() => navigate(`/anh/solicitudes/${s.id_publico}`)}
+                    className="hover:bg-background transition-colors cursor-pointer group"
+                  >
+                    <td className="px-4 py-3 text-sm font-mono font-medium text-foreground">
+                      #{formatIdPublico(s.id_publico)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                      {formatFecha(s.fecha_creacion)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-foreground">
+                      {COMBUSTIBLES[s.tipo_combustible] ?? s.tipo_combustible}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                      {s.litros_solicitados} L / {s.litros_aprobados != null ? `${s.litros_aprobados} L` : "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <EstadoSolicitudBadge estado={s.estado} />
+                    </td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">
+                      {s.estacion_nombre || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {totalPaginas > 1 && (
+          <div className="px-4 py-3 border-t border-border flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              Página {pagina} de {totalPaginas} · {total} solicitudes
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                icon={<ChevronLeft className="w-3.5 h-3.5" />}
+                onClick={() => setPagina(p => Math.max(1, p - 1))}
+                disabled={pagina === 1 || loading}
+              >
+                Anterior
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPagina(p => Math.min(totalPaginas, p + 1))}
+                disabled={pagina >= totalPaginas || loading}
+              >
+                Siguiente
+                <ChevronRight className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -403,6 +567,9 @@ export default function DetalleConsumidor() {
             )}
           </CardBody>
         </Card>
+
+        {/* HISTORIAL DE SOLICITUDES + CUPO DEL MES */}
+        <SolicitudesConsumidor perfilId={perfil.id} />
 
         {/* ACCIONES DE CUENTA */}
         <Card>

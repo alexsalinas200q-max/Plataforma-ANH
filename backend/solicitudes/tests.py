@@ -576,3 +576,38 @@ class RechazoAutomaticoMotivoTests(TestCase):
             s.observacion_anh,
             "Rechazada automáticamente: no se respondió la observación dentro del plazo.",
         )
+
+
+# ------------------------------------------------
+# LOTE D — HISTORIAL POR CONSUMIDOR (ANH/ADMIN)
+# ------------------------------------------------
+
+class HistorialPorConsumidorTests(TestCase):
+
+    def test_filtro_por_consumidor_con_estacion(self):
+        anh = User.objects.create_user(
+            email="anh_hist@test.com", nombres="ANH", apellido_paterno="Hist",
+            tipo_usuario=User.TipoUsuario.ANH, password="testpass123",
+        )
+        anh.estado_cuenta = User.EstadoCuenta.ACTIVO
+        anh.save(update_fields=["estado_cuenta"])
+        client = APIClient()
+        client.force_authenticate(user=anh)
+
+        consumidor = _crear_consumidor("cons_hist@test.com")
+        otro       = _crear_consumidor("otro_hist@test.com")
+        estacion   = _crear_estacion()
+
+        propia = _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.DESPACHADA)
+        Solicitud.objects.filter(pk=propia.pk).update(estacion_servicio=estacion)
+        _crear_solicitud(consumidor, Solicitud.EstadoSolicitud.CANCELADA)
+        _crear_solicitud(otro, Solicitud.EstadoSolicitud.CANCELADA)
+
+        response = client.get(reverse("solicitud-list"), {"consumidor": consumidor.id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+        por_id = {r["id_publico"]: r for r in response.data["results"]}
+        self.assertEqual(por_id[str(propia.id_publico)]["estacion_nombre"], "Estación de prueba")
+        sin_estacion = next(r for r in response.data["results"] if r["id_publico"] != str(propia.id_publico))
+        self.assertEqual(sin_estacion["estacion_nombre"], "—")

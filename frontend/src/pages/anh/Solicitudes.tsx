@@ -9,11 +9,12 @@ import { Alert } from "../../components/ui/Alert";
 import { Spinner } from "../../components/ui/Spinner";
 import { EstadoSolicitudBadge } from "../../components/ui/EstadoBadge";
 import { solicitudesService } from "../../services/solicitudes.service";
+import { estacionesService } from "../../services/estaciones.service";
 import type { Solicitud } from "../../types/solicitud.types";
 import { COMBUSTIBLES } from "../../utils/constants";
 import { formatFecha, formatIdPublico } from "../../utils/format";
 import {
-  FileText, Search, RefreshCw, ChevronLeft, ChevronRight,
+  FileText, Search, RefreshCw, ChevronLeft, ChevronRight, Building2, X,
 } from "lucide-react";
 
 // ------------------------------------------------
@@ -56,6 +57,12 @@ export default function SolicitudesANH() {
   const [busquedaInput, setBusquedaInput] = useState("");
   const [pagina,        setPagina]        = useState(1);
 
+  // Filtro por estación (?estacion=<id>), p. ej. desde "Ver solicitudes
+  // de esta estación" en el detalle de estación. Se combina con el tab
+  // y la búsqueda.
+  const [estacionId,     setEstacionId]     = useState(() => searchParams.get("estacion") ?? "");
+  const [estacionNombre, setEstacionNombre] = useState("");
+
   // ------------------------------------------------
   // CARGA DE DATOS
   // La búsqueda funciona DENTRO del estado activo:
@@ -66,6 +73,7 @@ export default function SolicitudesANH() {
     paginaActual: number,
     estadoActual: string,
     busquedaActual: string,
+    estacionActual: string,
   ) => {
     setLoading(true);
     setError("");
@@ -75,6 +83,7 @@ export default function SolicitudesANH() {
       };
       if (estadoActual) params.estado = estadoActual;
       if (busquedaActual) params.search = busquedaActual;
+      if (estacionActual) params.estacion_servicio = estacionActual;
 
       const res = await solicitudesService.getAll(params);
       setSolicitudes(res.results ?? []);
@@ -89,16 +98,31 @@ export default function SolicitudesANH() {
   }, []);
 
   useEffect(() => {
-    cargar(pagina, estado, busqueda);
-  }, [pagina, estado, busqueda, cargar]);
+    cargar(pagina, estado, busqueda, estacionId);
+  }, [pagina, estado, busqueda, estacionId, cargar]);
+
+  // Nombre de la estación filtrada, para el chip
+  useEffect(() => {
+    if (!estacionId) return;
+    estacionesService.getById(Number(estacionId))
+      .then(e => setEstacionNombre(e.nombre))
+      .catch(() => setEstacionNombre(`#${estacionId}`));
+  }, [estacionId]);
 
   // Sincronizar el query param ?estado= con el tab activo
   // para que el URL refleje el estado y se pueda compartir/recargar.
   useEffect(() => {
     const params: Record<string, string> = {};
     if (estado) params.estado = estado;
+    if (estacionId) params.estacion = estacionId;
     setSearchParams(params, { replace: true });
-  }, [estado, setSearchParams]);
+  }, [estado, estacionId, setSearchParams]);
+
+  const onQuitarEstacion = () => {
+    setEstacionId("");
+    setEstacionNombre("");
+    setPagina(1);
+  };
 
   const onBuscar = (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,7 +161,7 @@ export default function SolicitudesANH() {
           <Button
             variant="outline"
             icon={<RefreshCw className="w-4 h-4" />}
-            onClick={() => cargar(pagina, estado, busqueda)}
+            onClick={() => cargar(pagina, estado, busqueda, estacionId)}
           >
             Actualizar
           </Button>
@@ -186,6 +210,15 @@ export default function SolicitudesANH() {
                 </Button>
               )}
             </form>
+            {estacionId && (
+              <div className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-primary/10 text-primary">
+                <Building2 className="w-3.5 h-3.5" />
+                Estación: {estacionNombre || `#${estacionId}`}
+                <button type="button" onClick={onQuitarEstacion} className="hover:text-primary-hover" aria-label="Quitar filtro de estación">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             {busqueda && (
               <p className="text-xs text-primary mt-2">
                 Resultados para "<strong>{busqueda}</strong>"

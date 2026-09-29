@@ -118,6 +118,11 @@ class SolicitudListSerializer(serializers.ModelSerializer):
     consumidor_nombre    = serializers.SerializerMethodField()
     consumidor_email     = serializers.SerializerMethodField()
     consumidor_documento = serializers.SerializerMethodField()
+    # Mismo campo que el detalle (SolicitudSerializer): la columna
+    # "Estación" del historial de DetalleConsumidor sale de acá.
+    estacion_nombre = serializers.CharField(
+        source="estacion_servicio.nombre", default="—", read_only=True
+    )
 
     class Meta:
         model = Solicitud
@@ -126,6 +131,7 @@ class SolicitudListSerializer(serializers.ModelSerializer):
             "consumidor_nombre",
             "consumidor_email",
             "consumidor_documento",
+            "estacion_nombre",
             "estado",
             "tipo_combustible",
             "tipo_combustible_aprobado",

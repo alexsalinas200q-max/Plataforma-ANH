@@ -12,8 +12,9 @@ import { Button } from "../../components/ui/Button";
 import { Spinner } from "../../components/ui/Spinner";
 import { Alert } from "../../components/ui/Alert";
 import { Modal } from "../../components/ui/Modal";
+import { formatFecha } from "../../utils/format";
 import {
-  Building2, ChevronRight, ArrowLeft, Search, Edit2,
+  Building2, ChevronRight, ArrowLeft, Search, Edit2, Eye, FileText,
   User, Mail, Phone, CheckCircle, AlertTriangle,
 } from "lucide-react";
 
@@ -25,8 +26,23 @@ interface Operador {
   celular: string;
 }
 
+// GET /api/estaciones/{id}/ (EstacionServicioReadSerializer)
 interface EstacionDetalle extends EstacionServicio {
-  operadores?: Operador[];
+  operadores?:          Operador[];
+  // Solo cuenta APROBADAS y DESPACHADAS (ver get_total_solicitudes).
+  total_solicitudes?:   number;
+  creada_por_nombre?:   string | null;
+  fecha_creacion?:      string;
+  fecha_actualizacion?: string;
+}
+
+function Campo({ label, value }: { label: string; value: string | number | null | undefined }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground mb-0.5">{label}</p>
+      <p className="text-sm font-medium text-foreground">{value ?? "—"}</p>
+    </div>
+  );
 }
 
 interface Prov { id: number; nombre: string; }
@@ -65,6 +81,12 @@ export default function EstacionesProvincia() {
   const [expOperadores, setExpOperadores] = useState<Set<number>>(new Set());
   const [cargandoOperadores, setCargandoOperadores] = useState<Set<number>>(new Set());
   const [operadoresCache, setOperadoresCache] = useState<Record<number, Operador[]>>({});
+
+  // Modal detalle (solo lectura)
+  const [detalleId,       setDetalleId]       = useState<number | null>(null);
+  const [detalle,         setDetalle]         = useState<EstacionDetalle | null>(null);
+  const [cargandoDetalle, setCargandoDetalle] = useState(false);
+  const [errorDetalle,    setErrorDetalle]    = useState("");
 
   // Modal editar
   const [modal,     setModal]     = useState(false);
@@ -158,6 +180,24 @@ export default function EstacionesProvincia() {
       setOperadoresCache(prev => ({ ...prev, [estacionId]: [] }));
     } finally {
       setCargandoOperadores(prev => { const s = new Set(prev); s.delete(estacionId); return s; });
+    }
+  };
+
+  // Detalle
+  const verDetalle = async (estacionId: number) => {
+    setDetalleId(estacionId);
+    setDetalle(null);
+    setErrorDetalle("");
+    setCargandoDetalle(true);
+    try {
+      const d = await estacionesService.getById(estacionId) as EstacionDetalle;
+      setDetalle(d);
+      // Aprovecha para llenar la caché de operadores de la tarjeta
+      setOperadoresCache(prev => ({ ...prev, [estacionId]: d.operadores ?? [] }));
+    } catch {
+      setErrorDetalle("No se pudo cargar el detalle de la estación.");
+    } finally {
+      setCargandoDetalle(false);
     }
   };
 
@@ -308,6 +348,9 @@ export default function EstacionesProvincia() {
 
                       {/* Acciones */}
                       <div className="px-5 py-3 border-t border-border flex gap-2 flex-wrap">
+                        <button onClick={() => verDetalle(e.id)} className="flex items-center gap-1.5 px-3 py-1.5 bg-background text-muted-foreground rounded-lg text-xs font-medium hover:bg-border transition-colors">
+                          <Eye className="w-3.5 h-3.5" /> Ver detalle
+                        </button>
                         <button onClick={() => abrirEditar(e)} className="flex items-center gap-1.5 px-3 py-1.5 bg-background text-muted-foreground rounded-lg text-xs font-medium hover:bg-border transition-colors">
                           <Edit2 className="w-3.5 h-3.5" /> Editar
                         </button>
@@ -378,6 +421,78 @@ export default function EstacionesProvincia() {
           </div>
         )}
       </div>
+
+      {/* MODAL DETALLE (solo lectura) */}
+      <Modal open={detalleId !== null} onClose={() => setDetalleId(null)} title="Detalle de estación" size="lg">
+        {cargandoDetalle ? (
+          <div className="flex items-center justify-center py-10"><Spinner size="lg" /></div>
+        ) : errorDetalle ? (
+          <Alert type="error" message={errorDetalle} />
+        ) : detalle && (
+          <div className="space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-foreground">{detalle.nombre}</p>
+                <p className="text-xs text-muted-foreground font-mono">{detalle.codigo}</p>
+              </div>
+              <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${estadoColor[detalle.estado] ?? "bg-background text-muted-foreground"}`}>
+                {detalle.estado}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Campo label="Departamento" value={detalle.departamento_nombre} />
+              <Campo label="Provincia"    value={provNombre || null} />
+              <Campo label="Municipio"    value={detalle.municipio_nombre} />
+              <Campo label="Dirección"    value={detalle.direccion} />
+              <Campo label="Solicitudes aprobadas o despachadas" value={detalle.total_solicitudes} />
+              <Campo label="Creada por"   value={detalle.creada_por_nombre} />
+              <Campo label="Fecha de creación"     value={detalle.fecha_creacion ? formatFecha(detalle.fecha_creacion, true) : null} />
+              <Campo label="Última actualización"  value={detalle.fecha_actualizacion ? formatFecha(detalle.fecha_actualizacion, true) : null} />
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                Operadores ESS ({detalle.operadores?.length ?? 0})
+              </p>
+              {(detalle.operadores ?? []).length === 0 ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-state-warning-bg text-state-warning-fg">
+                  <AlertTriangle className="w-3 h-3" />
+                  Sin operadores asignados
+                </span>
+              ) : (
+                <div className="border border-border rounded-xl divide-y divide-border">
+                  {(detalle.operadores ?? []).map(op => (
+                    <div key={op.id} className="px-4 py-2.5 space-y-0.5">
+                      <p className="text-sm font-medium text-foreground">{op.nombre_completo}</p>
+                      <p className="text-xs text-muted-foreground">{op.cargo}</p>
+                      <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        <Mail className="w-3 h-3" /> {op.email}
+                      </p>
+                      {op.celular && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                          <Phone className="w-3 h-3" /> {op.celular}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 pt-1">
+              <Button variant="outline" onClick={() => setDetalleId(null)}>Cerrar</Button>
+              <Button
+                variant="primary"
+                icon={<FileText className="w-4 h-4" />}
+                onClick={() => navigate(`/anh/solicitudes?estado=&estacion=${detalle.id}`)}
+              >
+                Ver solicitudes de esta estación
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* MODAL EDITAR */}
       <Modal open={modal} onClose={() => setModal(false)} title="Editar estación" size="lg">
