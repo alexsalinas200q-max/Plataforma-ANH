@@ -150,14 +150,18 @@ function BuscadorConsumidor({ seleccionado, onSeleccionar, onQuitar, inputCls }:
   const visibles = consulta.length >= 2 && resultados.para === consulta ? resultados.items : [];
 
   return (
-    <div className="relative">
-      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-      <input
-        value={texto}
-        onChange={e => setTexto(e.target.value)}
-        placeholder="Buscar por nombre o CI (opcional)"
-        className={`${inputCls} w-full pl-9`}
-      />
+    <div>
+      {/* El wrapper relative contiene SOLO el input: si incluyera el
+          desplegable, top-1/2 centraría la lupa sobre la lista. */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+        <input
+          value={texto}
+          onChange={e => setTexto(e.target.value)}
+          placeholder="Buscar por nombre o CI (opcional)"
+          className={`${inputCls} w-full pl-9`}
+        />
+      </div>
       {consulta.length >= 2 && (
         <div className="mt-1 border border-border rounded-xl bg-card divide-y divide-border overflow-hidden">
           {buscando && visibles.length === 0 ? (
@@ -185,12 +189,53 @@ function BuscadorConsumidor({ seleccionado, onSeleccionar, onQuitar, inputCls }:
   );
 }
 
+// Eje Y de los rankings horizontales: parte los nombres largos en hasta
+// 3 líneas por palabras (en vez de cortarlos o encimarlos). El alto del
+// gráfico crece con la cantidad de filas (altoRanking).
+const MAX_CARACTERES_LINEA = 16;
+
+function partirEtiqueta(texto: string): string[] {
+  const lineas: string[] = [];
+  let actual = "";
+  for (const palabra of texto.split(/\s+/)) {
+    if (actual && (actual + " " + palabra).length > MAX_CARACTERES_LINEA) {
+      lineas.push(actual);
+      actual = palabra;
+    } else {
+      actual = actual ? `${actual} ${palabra}` : palabra;
+    }
+  }
+  if (actual) lineas.push(actual);
+  return lineas.length > 3 ? [...lineas.slice(0, 2), `${lineas.slice(2).join(" ").slice(0, MAX_CARACTERES_LINEA - 1)}…`] : lineas;
+}
+
+interface EtiquetaEjeProps {
+  x?: number;
+  y?: number;
+  payload?: { value: string };
+}
+
+function EtiquetaEjeY({ x = 0, y = 0, payload }: EtiquetaEjeProps) {
+  const lineas = partirEtiqueta(String(payload?.value ?? ""));
+  const alto = 11;
+  return (
+    <text x={x} y={y - ((lineas.length - 1) * alto) / 2} textAnchor="end"
+      fontSize={10} fill="var(--color-muted-foreground)" dominantBaseline="middle">
+      {lineas.map((linea, i) => (
+        <tspan key={i} x={x} dy={i === 0 ? 0 : alto}>{linea}</tspan>
+      ))}
+    </text>
+  );
+}
+
+const altoRanking = (filas: number) => Math.max(160, filas * 44 + 30);
+
 // Tooltip con el mismo lenguaje visual que el resto de las tarjetas,
 // en vez del tooltip blanco por defecto de Recharts.
 const tooltipStyle = {
   contentStyle: {
-    backgroundColor: "var(--card)",
-    border: "1px solid var(--border)",
+    backgroundColor: "var(--color-card)",
+    border: "1px solid var(--color-border)",
     borderRadius: "0.75rem",
     fontSize: "12px",
   },
@@ -364,32 +409,32 @@ export default function ReportesANH() {
                   <span className="text-sm font-medium text-foreground">Filtros</span>
                   {loadStats && <Spinner size="sm" />}
                 </div>
-                <div className="flex flex-wrap gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap gap-3">
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Desde</label>
-                    <input type="date" value={fechaDesde} onChange={e => setFechaDesde(e.target.value)} className={inputCls} />
+                    <input type="date" value={fechaDesde} onChange={e => setFechaDesde(e.target.value)} className={`${inputCls} w-full`} />
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Hasta</label>
-                    <input type="date" value={fechaHasta} onChange={e => setFechaHasta(e.target.value)} className={inputCls} />
+                    <input type="date" value={fechaHasta} onChange={e => setFechaHasta(e.target.value)} className={`${inputCls} w-full`} />
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Estado</label>
-                    <select value={estadoFiltro} onChange={e => setEstadoFiltro(e.target.value)} className={inputCls}>
+                    <select value={estadoFiltro} onChange={e => setEstadoFiltro(e.target.value)} className={`${inputCls} w-full`}>
                       {ESTADOS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Combustible</label>
-                    <select value={combustibleFiltro} onChange={e => setCombustibleFiltro(e.target.value)} className={inputCls}>
+                    <select value={combustibleFiltro} onChange={e => setCombustibleFiltro(e.target.value)} className={`${inputCls} w-full`}>
                       <option value="">Todos</option>
                       <option value="GASOLINA">Gasolina</option>
                       <option value="DIESEL">Diésel</option>
                     </select>
                   </div>
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 min-w-0">
                     <label className="text-xs text-muted-foreground">Estación</label>
-                    <select value={estacionFiltro} onChange={e => setEstacionFiltro(e.target.value)} className={inputCls}>
+                    <select value={estacionFiltro} onChange={e => setEstacionFiltro(e.target.value)} className={`${inputCls} w-full`}>
                       <option value="">Todas</option>
                       {estaciones.map(e => <option key={e.id} value={e.id}>{e.nombre}</option>)}
                     </select>
@@ -428,16 +473,18 @@ export default function ReportesANH() {
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
                     {/* Estados — dona */}
                     <Grafico titulo="Solicitudes por estado">
-                      <ResponsiveContainer width="100%" height={260}>
+                      {/* 300 px: en mobile la leyenda ocupa hasta 4 filas y el
+                          anillo (160 px) tiene que entrar en el espacio restante. */}
+                      <ResponsiveContainer width="100%" height={300}>
                         <PieChart>
                           <Pie
                             data={stats.por_estado}
                             dataKey="total"
                             nameKey="estado"
                             cx="50%"
-                            cy="45%"
-                            innerRadius={55}
-                            outerRadius={85}
+                            cy="50%"
+                            innerRadius={52}
+                            outerRadius={80}
                             paddingAngle={2}
                           >
                             {stats.por_estado.map(entry => (
@@ -492,11 +539,11 @@ export default function ReportesANH() {
                       {stats.por_estacion.length === 0 ? (
                         <p className="text-sm text-muted-foreground text-center py-10">Sin despachos en el rango.</p>
                       ) : (
-                        <ResponsiveContainer width="100%" height={260}>
-                          <BarChart data={stats.por_estacion} layout="vertical" margin={{ top: 0, right: 60, left: 10, bottom: 0 }}>
+                        <ResponsiveContainer width="100%" height={altoRanking(stats.por_estacion.length)}>
+                          <BarChart data={stats.por_estacion} layout="vertical" margin={{ top: 0, right: 56, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis type="number" tick={{ fontSize: 11 }} />
-                            <YAxis dataKey="nombre" type="category" tick={{ fontSize: 10 }} width={120} />
+                            <YAxis dataKey="nombre" type="category" tick={<EtiquetaEjeY />} width={104} interval={0} />
                             <Tooltip {...tooltipStyle} formatter={(v) => [formatLitros(Number(v)), "Despachado"]} />
                             <Bar dataKey="litros_despachados" name="Litros despachados" fill={ESTADOS_SOLICITUD_HEX.DESPACHADA} radius={[0, 4, 4, 0]}>
                               <LabelList dataKey="litros_despachados" position="right" formatter={(v: number) => formatLitros(v)} style={{ fontSize: 11 }} />
@@ -510,11 +557,11 @@ export default function ReportesANH() {
                       {stats.por_municipio.length === 0 ? (
                         <p className="text-sm text-muted-foreground text-center py-10">Sin despachos en el rango.</p>
                       ) : (
-                        <ResponsiveContainer width="100%" height={260}>
-                          <BarChart data={stats.por_municipio} layout="vertical" margin={{ top: 0, right: 60, left: 10, bottom: 0 }}>
+                        <ResponsiveContainer width="100%" height={altoRanking(stats.por_municipio.length)}>
+                          <BarChart data={stats.por_municipio} layout="vertical" margin={{ top: 0, right: 56, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis type="number" tick={{ fontSize: 11 }} />
-                            <YAxis dataKey="municipio" type="category" tick={{ fontSize: 10 }} width={100} />
+                            <YAxis dataKey="municipio" type="category" tick={<EtiquetaEjeY />} width={104} interval={0} />
                             <Tooltip {...tooltipStyle} formatter={(v) => [formatLitros(Number(v)), "Despachado"]} />
                             <Bar dataKey="litros_despachados" name="Litros despachados" fill={ESTADOS_SOLICITUD_HEX.APROBADA} radius={[0, 4, 4, 0]}>
                               <LabelList dataKey="litros_despachados" position="right" formatter={(v: number) => formatLitros(v)} style={{ fontSize: 11 }} />
@@ -542,7 +589,7 @@ export default function ReportesANH() {
                   ? SIN_DATOS
                   : "Se descarga con los mismos filtros aplicados arriba."}
               </p>
-              <div className="flex gap-3">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <Button
                   variant="primary"
                   icon={<FileSpreadsheet className="w-4 h-4" />}
@@ -570,11 +617,13 @@ export default function ReportesANH() {
 
         {/* TAB CONSUMIDORES */}
         {tab === "consumidores" && (
-          <div className="max-w-2xl space-y-5">
+          <div className="space-y-5">
 
             {alertaCons && <Alert type={alertaCons.type} message={alertaCons.message} />}
 
-            <Card>
+            {/* Desktop: opciones a la izquierda, resumen fijo a la derecha */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
+            <Card className="lg:col-span-2 min-w-0">
               <CardHeader><h2 className="font-semibold text-foreground">Reporte de consumidores</h2></CardHeader>
               <CardBody className="space-y-5">
                 <div>
@@ -594,7 +643,7 @@ export default function ReportesANH() {
 
                 <div className={consumidorSel ? "opacity-50" : ""}>
                   <label className="block text-sm font-medium text-foreground mb-3">Tipo de reporte</label>
-                  <div className="grid grid-cols-1 gap-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     {FILTROS_CONSUMIDORES.map(f => (
                       <label key={f.value} className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-colors ${
                         filtroConsumidor === f.value ? "border-primary bg-primary/10" : "border-border hover:bg-background"
@@ -617,7 +666,7 @@ export default function ReportesANH() {
                     value={mesCons}
                     max={mesActual()}
                     onChange={e => setMesCons(e.target.value || mesActual())}
-                    className={inputCls}
+                    className={`${inputCls} w-full sm:w-auto`}
                   />
                 </div>
 
@@ -639,7 +688,7 @@ export default function ReportesANH() {
               </CardBody>
             </Card>
 
-            <div className="bg-navbar rounded-2xl p-6 text-navbar-foreground">
+            <div className="bg-navbar rounded-2xl p-6 text-navbar-foreground lg:sticky lg:top-5">
               <h3 className="font-semibold mb-1">Resumen</h3>
               <p className="text-navbar-muted text-sm mb-4">
                 {consumidorSel
@@ -649,28 +698,33 @@ export default function ReportesANH() {
                       {incluirDetalle && " · con detalle"}
                     </>}
               </p>
-              <div className="flex gap-3">
+              {/* Apilados y a todo el ancho: la columna del resumen es angosta
+                  en desktop y en mobile dan un área táctil cómoda (size lg). */}
+              <div className="flex flex-col gap-3">
                 <Button
                   variant="primary"
+                  size="lg"
                   icon={<FileSpreadsheet className="w-4 h-4" />}
                   loading={descargandoCons === "EXCEL"}
                   disabled={descargandoCons !== null}
                   onClick={() => descargarConsumidores("EXCEL")}
-                  className="flex-1"
+                  className="w-full"
                 >
                   Descargar Excel
                 </Button>
                 <Button
                   variant="secondary"
+                  size="lg"
                   icon={<FileText className="w-4 h-4" />}
                   loading={descargandoCons === "PDF"}
                   disabled={descargandoCons !== null}
                   onClick={() => descargarConsumidores("PDF")}
-                  className="flex-1"
+                  className="w-full"
                 >
                   Descargar PDF
                 </Button>
               </div>
+            </div>
             </div>
           </div>
         )}
